@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Database (local copy)
+history.db
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Note: .cache is intentionally TRACKED for GitHub Actions CI/CD
+# It contains the OAuth token needed for the workflow
+# Generate locally once: uv run main.py

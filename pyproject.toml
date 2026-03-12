@@ -1,7 +1,7 @@
 [project]
 name = "unplayed"
 version = "0.1.0"
-description = "Add your description here"
+description = "Automatically generates a Spotify playlist containing new songs you have never played before"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

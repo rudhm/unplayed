@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The Spotify Discovery Engine has been successfully configured for automated cloud execution. The project now supports continuous playlist refresh via GitHub Actions, eliminating the need for local cron jobs or manual execution.
+The unplayed has been successfully configured for automated cloud execution. The project now supports continuous playlist refresh via GitHub Actions, eliminating the need for local cron jobs or manual execution.
 
 **Status**: ✅ **DEPLOYMENT READY**
 
@@ -149,7 +149,7 @@ Repository → Settings → Secrets → New Secret:
 
 ### Step 4: Monitor
 
-GitHub → Actions tab → Spotify Discovery Engine
+GitHub → Actions tab → unplayed
 
 ---
 
@@ -349,7 +349,7 @@ GitHub → Actions tab → Spotify Discovery Engine
 
 ## Conclusion
 
-The Spotify Discovery Engine is now **production-ready** for GitHub Actions deployment. The implementation:
+The unplayed is now **production-ready** for GitHub Actions deployment. The implementation:
 
 ✅ Follows GitHub Actions best practices
 ✅ Maintains backward compatibility (local execution still works)

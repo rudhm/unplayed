@@ -1,4 +1,4 @@
-# Spotify Discovery Engine - Phase Status
+# unplayed - Phase Status
 
 ## ✅ Phase 1: Authentication
 **Status**: COMPLETE (Updated for OAuth)

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Spotify Discovery Engine now supports automatic playlist refresh via GitHub Actions. The workflow runs every 6 hours on GitHub's servers, keeping your playlist fresh without requiring your computer to be on.
+The unplayed now supports automatic playlist refresh via GitHub Actions. The workflow runs every 6 hours on GitHub's servers, keeping your playlist fresh without requiring your computer to be on.
 
 ## What's New
 
@@ -88,7 +88,7 @@ Go to your GitHub repository:
 ### Step 4: Verify the Workflow
 
 Go to **Actions** tab in your GitHub repository. You should see:
-- Workflow name: "Spotify Discovery Engine"
+- Workflow name: "unplayed"
 - Last run status
 - Schedule: Every 6 hours
 
@@ -112,7 +112,7 @@ In your timezone:
 You can manually run the workflow anytime:
 
 1. Go to your repository → **Actions**
-2. Click "Spotify Discovery Engine"
+2. Click "unplayed"
 3. Click "Run workflow"
 4. Wait for it to complete
 
@@ -209,7 +209,7 @@ Examples:
 To temporarily disable the workflow:
 
 1. Go to **Actions**
-2. Click "Spotify Discovery Engine"
+2. Click "unplayed"
 3. Click **...** menu
 4. Select "Disable workflow"
 

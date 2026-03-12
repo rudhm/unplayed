@@ -1,4 +1,4 @@
-# Spotify Discovery Engine
+# unplayed
 
 Automatically generates a Spotify playlist containing new songs you have never played before.
 
@@ -7,7 +7,7 @@ Automatically generates a Spotify playlist containing new songs you have never p
 - 🎵 **Random Music Discovery** - Generate random tracks from Spotify's global catalog
 - 🚫 **No Repeats** - Automatically filters out tracks you've already played
 - 📊 **Play History Tracking** - SQLite database stores your listening history
-- 🔄 **Automatic Updates** - Updates your "Discovery Engine" playlist with new discoveries
+- 🔄 **Automatic Updates** - Updates your "unplayed" playlist with new discoveries
 - ⚡ **API Efficiency** - Minimal API calls (2 searches per run)
 - 🛡️ **Rate Limit Protection** - Built-in retry logic with exponential backoff
 - 📈 **Listening Analytics** - Track discovery metrics and listening patterns
@@ -25,7 +25,7 @@ Automatically generates a Spotify playlist containing new songs you have never p
    ↓
 5. Filter out tracks you've already heard
    ↓
-6. Create/update "Discovery Engine" playlist
+6. Create/update "unplayed" playlist
    ↓
 7. Log statistics and discovery metrics
 ```
@@ -122,7 +122,7 @@ Run the discovery engine daily using cron:
 
 ```bash
 # Add to crontab (crontab -e)
-0 9 * * * cd /home/user/spotify-discovery-engine && uv run main.py
+0 9 * * * cd /home/user/unplayed && uv run main.py
 ```
 
 This runs the engine every day at 9 AM.
@@ -148,7 +148,7 @@ Automatically run the discovery engine on GitHub servers every 6 hours without y
 
 3. **Workflow Runs**
    - The `.github/workflows/discovery.yml` file will automatically:
-     - Run every 6 hours (0:00, 6:00, 12:00, 18:00 UTC)
+     - Runs every 6 hours (0:00, 6:00, 12:00, 18:00 UTC)
      - Fetch your recently played tracks
      - Generate new discoveries
      - Update your playlist

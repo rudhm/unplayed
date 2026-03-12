@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     """
-    Phase 9: Complete Spotify Discovery Engine pipeline.
+    Phase 9: Complete unplayed pipeline.
     
     Pipeline:
     1. Authenticate with Spotify

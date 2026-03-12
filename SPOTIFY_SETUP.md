@@ -77,9 +77,82 @@ The output will be a JSON object like:
    | `SPOTIPY_CLIENT_ID` | Your Spotify Client ID | Spotify Dashboard |
    | `SPOTIPY_CLIENT_SECRET` | Your Spotify Client Secret | Spotify Dashboard |
    | `SPOTIPY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | Fixed value |
-   | `SPOTIFY_CACHE_JSON` | Your `.cache` file contents | Output from `cat .cache` |
+   | `SPOTIFY_CACHE_JSON` | Your `.cache` file contents | See instructions below |
 
-**Important:** When pasting the `SPOTIFY_CACHE_JSON`, copy the entire JSON output from `cat .cache` as a single string.
+### Storing SPOTIFY_CACHE_JSON Correctly
+
+⚠️ **Common mistake:** Extra whitespace or incomplete copying causes JSON decode errors.
+
+**Follow these steps exactly:**
+
+1. **Export your token** (from Step 2):
+   ```bash
+   cat .cache
+   ```
+   Output will look like:
+   ```json
+   {"access_token": "...", "token_type": "Bearer", "expires_in": 3600, ...}
+   ```
+
+2. **In GitHub UI:**
+   - Go to Settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `SPOTIFY_CACHE_JSON`
+   - Value: **Paste the ENTIRE JSON output from `cat .cache`**
+     - Start with the opening `{`
+     - End with the closing `}`
+     - Don't add quotes around it
+     - Include all fields (access_token, refresh_token, expires_in, expires_at, etc.)
+
+3. **Verify the paste:**
+   - ✅ Starts with `{` (opening brace)
+   - ✅ Ends with `}` (closing brace)
+   - ✅ No extra quotes around the JSON
+   - ✅ No truncation (full content pasted)
+   - ❌ NOT wrapped in quotes like `"{ ... }"`
+   - ❌ NOT multiple lines with just the token value
+
+4. **Click "Add secret"**
+
+**Example - CORRECT Format:**
+```
+{"access_token": "BQD...", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "AQA...", "scope": "...", "expires_at": 1234567890.123456}
+```
+
+**Example - WRONG Format (common errors):**
+```
+"{"access_token": "BQD...", ...}"    ← Extra quotes
+{ ... }                              ← With newlines/whitespace
+'{ ... }'                            ← Single quotes
+BQD...                               ← Only the token, missing JSON structure
+{"access_token": "BQD..."}           ← Incomplete JSON (missing other fields)
+```
+
+### Troubleshooting SPOTIFY_CACHE_JSON
+
+If you get `Failed to decode SPOTIFY_CACHE_JSON`:
+
+1. **Check the secret value in GitHub:**
+   - Settings → Secrets → Click the pencil icon next to `SPOTIFY_CACHE_JSON`
+   - Verify it starts with `{` and ends with `}`
+   - If not, delete and recreate it
+
+2. **Re-export and re-paste:**
+   ```bash
+   # Local machine
+   cat .cache
+   # Copy the output
+   # Go to GitHub UI and update the secret
+   ```
+
+3. **Verify the .cache file locally:**
+   ```bash
+   python -c "import json; json.load(open('.cache'))" && echo "✓ Valid JSON"
+   ```
+   This confirms your `.cache` file is valid JSON.
+
+4. **Run the workflow again:**
+   - After updating the secret, go to Actions → Unplayed Discovery Engine → Run workflow
 
 ## Step 5: Verify the Setup
 

@@ -16,6 +16,7 @@ def _load_token_from_env():
     Load Spotify token from SPOTIFY_CACHE_JSON environment variable.
     
     This is used in CI/CD environments where the token is passed as a JSON string.
+    Sanitizes whitespace and provides detailed error logging for debugging.
     
     Returns:
         dict: Token info if found, None otherwise
@@ -24,12 +25,26 @@ def _load_token_from_env():
     if not cache_json:
         return None
     
+    # Strip whitespace (spaces, newlines, tabs) that may be added during secret copy/paste
+    cache_json = cache_json.strip()
+    
+    if not cache_json:
+        logger.warning("SPOTIFY_CACHE_JSON is empty after stripping whitespace. "
+                      "Ensure the secret is pasted correctly in GitHub Secrets UI.")
+        return None
+    
     try:
         token_info = json.loads(cache_json)
         logger.debug("Loaded Spotify token from SPOTIFY_CACHE_JSON environment variable")
         return token_info
     except json.JSONDecodeError as e:
-        logger.warning(f"Failed to decode SPOTIFY_CACHE_JSON: {e}")
+        logger.error(
+            f"Failed to decode SPOTIFY_CACHE_JSON. "
+            f"Error: {e} at line {e.lineno}, column {e.colno}. "
+            f"First 100 chars of value: {cache_json[:100]!r}. "
+            f"Ensure you copied the entire .cache file contents (including {{ and }}) "
+            f"into GitHub Secrets. See SPOTIFY_SETUP.md for instructions."
+        )
         return None
 
 

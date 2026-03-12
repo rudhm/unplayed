@@ -27,6 +27,5 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Note: .cache is intentionally TRACKED for GitHub Actions CI/CD
-# It contains the OAuth token needed for the workflow
-# Generate locally once: uv run main.py
+# Spotify OAuth cache - MUST NOT be tracked
+.cache

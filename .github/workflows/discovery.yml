@@ -25,6 +25,9 @@ jobs:
         run: |
           pip install spotipy python-dotenv
 
+      - name: Create Spotify Cache
+        run: echo '${{ secrets.SPOTIFY_CACHE }}' > .cache
+
       - name: Run discovery engine
         run: python main.py
         env:

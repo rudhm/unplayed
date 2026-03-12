@@ -20,7 +20,7 @@ def get_spotify():
     Uses cached token if available. On first run or token expiry, requires
     browser authorization which opens automatically (if a browser is available).
     In headless environments (e.g., GitHub Actions), uses cached token without
-    opening a browser.
+    opening a browser. If no cached token exists in CI, raises an error.
     
     Returns:
         spotipy.Spotify: Authenticated Spotify client instance with user access
@@ -45,7 +45,7 @@ def get_spotify():
         "user-library-read",
     ]
     
-    # Detect CI/CD environment (GitHub Actions)
+    # Detect CI/CD environment (GitHub Actions, etc.)
     is_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
     
     auth_manager = SpotifyOAuth(
@@ -57,5 +57,15 @@ def get_spotify():
         show_dialog=False,
         cache_path=".cache"
     )
+    
+    # In CI environments, ensure we have a cached token before proceeding
+    if is_ci:
+        token_info = auth_manager.get_cached_token()
+        if not token_info:
+            raise RuntimeError(
+                "No cached Spotify OAuth token found in CI environment. "
+                "Run the script locally once to generate and cache the token, "
+                "then commit the .cache file to the repository."
+            )
     
     return spotipy.Spotify(auth_manager=auth_manager)

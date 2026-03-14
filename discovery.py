@@ -116,26 +116,29 @@ def search_spotify(sp, query, offset):
     return sp.search(
         q=query,
         type="track",
-        limit=20,
+        limit=10,
         offset=offset,
         market="IN"
     )
 
 
-def random_tracks(sp, target=100, num_searches=2, exclude_played=None):
+def random_tracks(sp, target=100, num_searches=4, exclude_played=None):
     """
     Generate random candidate tracks using fixed searches.
     
     Strategy: Run a fixed number of searches, collect candidates, deduplicate,
     filter out already-played tracks, shuffle, and sample. This is efficient and predictable.
     
-    Example: 2 searches × 20 results = 40 candidates → deduplicate → 
+    Example: 4 searches × 10 results = 40 candidates → deduplicate → 
              filter played → shuffle → sample
+    
+    Note: As of Feb 2026, Spotify API limit reduced from 50 to 10 per search.
+    Num_searches doubled from 2 to 4 to maintain same candidate pool size.
     
     Args:
         sp: Spotipy client instance
         target: Number of tracks to return (default 100)
-        num_searches: Number of search queries to run (default 2)
+        num_searches: Number of search queries to run (default 4)
         exclude_played: Set of track IDs to exclude (already played tracks)
     
     Returns:

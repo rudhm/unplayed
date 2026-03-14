@@ -1,20 +1,20 @@
-# 🎧 Unplayed: A Resilient Spotify Discovery Engine
-Spotify recently locked down their recommendation API, so I built my own.
+# 🎧 Unplayed: Discover Songs You've Actually Never Heard
 
-This is a personalized music discovery engine I built (with the help of an AI agent) to solve a personal problem: I wanted a daily playlist of truly unplayed songs that perfectly matched my taste, without getting stuck in a recommendation echo chamber.
+Spotify recommends songs you might like, but it still repeats artists you've already heard. I built Unplayed to discover songs I've never played before, using the Spotify API and an automated discovery engine.
 
-Because Spotify deprecated genre tags and locked down their graph endpoints, this script uses a hybrid architecture: it reads your listening history from Spotify, fetches genre tags from Last.fm, mathematically scores candidates, and cross-references a local SQLite database to guarantee you've never heard the songs before.
+The problem with Spotify's recommendations is real: you get stuck in loops with the same artists, the algorithm doesn't remember what you've actually played, and "personalized" starts to feel formulaic. This script solves that by building a hybrid system that reads your listening history, discovers new tracks from genres you love, and maintains a permanent memory of everything it's ever recommended—so you never get the same song twice.
 
-✨ Features
-The Last.fm Bridge: Bypasses Spotify's API restrictions by mapping your top artists to Last.fm's open genre tags.
+## ✨ Features
 
-V2 Scoring Algorithm: Evaluates a pool of 120+ candidate tracks and ranks them based on a custom freshness and popularity mathematical formula.
+**The Last.fm Bridge**: Spotify locked down their APIs, so we work around it. We map your top artists to Last.fm's open genre database to find what you actually want to hear.
 
-Artist Diversity Limits: Strictly enforces a max 2 tracks per artist rule so your playlist never gets flooded by one band.
+**V2 Scoring Algorithm**: Evaluates 120+ candidate songs and ranks them using a custom formula that balances freshness (new songs) with what matches your taste.
 
-80/20 Intelligent Mix: 80% of the playlist is hyper-targeted to your exact taste profile, while 20% explores random wildcard genres to keep things fresh.
+**No Artist Fatigue**: Enforces a max of 2 songs per artist per discovery, so you don't get bored of the same band.
 
-True "Unplayed" Guarantee: Uses a local history.db SQLite database to remember every song it has ever given you, ensuring zero repeats.
+**80/20 Mix**: 80% laser-focused on your exact taste, 20% random wildcard picks to surprise you with something unexpected.
+
+**True Unplayed Guarantee**: Uses a local SQLite database to remember every single song we've ever given you. Zero repeats. Ever.
 
 🛠️ Prerequisites
 To run this yourself, you will need:

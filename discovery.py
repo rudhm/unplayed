@@ -1,20 +1,53 @@
 import random
 import logging
 import time
+import os
+import requests
+from datetime import datetime
 from functools import wraps
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
+
+# Hardcoded diverse genres for wildcard portion (20% of discovery)
+# Used since Spotify removed the recommendation_genre_seeds() endpoint
+WILDCARD_GENRES = [
+    "jazz", "classical", "metal", "reggae", "electronic",
+    "folk", "ambient", "blues", "country", "disco",
+    "funk", "grunge", "indie", "punk", "soul", "techno"
+]
+
+def score_track(track):
+    """
+    Mathematical scoring based on popularity (60%) and freshness (40%).
+    """
+    release_date_str = track.get('release_date')
+    if not release_date_str:
+        return 0.0
+    
+    try:
+        if len(release_date_str) == 4: # YYYY
+            release_date = datetime.strptime(release_date_str, "%Y")
+        elif len(release_date_str) == 7: # YYYY-MM
+            release_date = datetime.strptime(release_date_str, "%Y-%m")
+        else: # YYYY-MM-DD (or longer, but we take first 10 chars)
+            release_date = datetime.strptime(release_date_str[:10], "%Y-%m-%d")
+    except (ValueError, IndexError):
+        return 0.0
+
+    age_in_days = max(0, (datetime.now() - release_date).days)
+    freshness_score = 1 / (1 + age_in_days / 365.0)
+    popularity_score = track.get('popularity', 0) / 100.0
+    
+    return (0.6 * popularity_score) + (0.4 * freshness_score)
+
 
 def retry_with_backoff(max_retries=3, base_delay=1):
     """
-    Decorator for retrying Spotify API calls with exponential backoff.
+    Decorator for retrying API calls with exponential backoff.
     Handles rate limits (HTTP 429) by reading Retry-After header.
-    
-    Args:
-        max_retries: Maximum number of retry attempts
-        base_delay: Initial delay in seconds between retries
     """
     def decorator(func):
         @wraps(func)
@@ -50,156 +83,150 @@ def retry_with_backoff(max_retries=3, base_delay=1):
     return decorator
 
 
-@retry_with_backoff(max_retries=3, base_delay=1)
-def get_related_artists_tracks(sp, artist_id, market="IN"):
+def get_lastfm_genres(artist_name):
     """
-    Fetch top tracks from artists related to a seed artist.
-    
-    Args:
-        sp: Spotipy client instance
-        artist_id: Seed artist ID
-        market: Market code (default "IN" for India)
-    
-    Returns:
-        list: Track IDs from related artists
+    Fetch top tags (genres) for an artist from Last.fm API.
+    Filters out non-genre tags and returns the top 3-5 tags.
     """
-    track_ids = []
+    if not LASTFM_API_KEY:
+        logger.warning("LASTFM_API_KEY not found in environment")
+        return []
+
+    url = f"http://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={artist_name}&api_key={LASTFM_API_KEY}&format=json"
+    
     try:
-        # Fetch related artists for the seed artist
-        related = sp.artist_related_artists(artist_id)
-        related_artists = related.get('artists', [])
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
         
-        if not related_artists:
-            return track_ids
+        tags = data.get('toptags', {}).get('tag', [])
+        if not tags:
+            return []
+            
+        # Filter to ignore non-genre tags
+        ignore_tags = {'seen live', 'awesome', 'under 2000 listeners', 'favorite', 'favourites'}
+        filtered_genres = []
         
-        # Pick 1-2 random related artists
-        sample_size = min(2, len(related_artists))
-        sampled_artists = random.sample(related_artists, sample_size)
-        
-        # Get top tracks for each sampled related artist
-        for rel_artist in sampled_artists:
-            try:
-                top_tracks = sp.artist_top_tracks(rel_artist['id'], market=market)
-                for track in top_tracks.get('tracks', [])[:5]:  # Take up to 5 per artist
-                    if track.get('id'):
-                        track_ids.append(track['id'])
-            except Exception as e:
-                logger.warning(f"Error fetching tracks for related artist {rel_artist.get('id')}: {e}")
-        
-        return track_ids
+        for t in tags:
+            tag_name = t.get('name', '').lower()
+            if tag_name and tag_name not in ignore_tags and not any(x in tag_name for x in ['live', 'favorite']):
+                filtered_genres.append(tag_name)
+            
+            if len(filtered_genres) >= 5:
+                break
+                
+        return filtered_genres[:5] if len(filtered_genres) >= 3 else filtered_genres
     except Exception as e:
-        logger.warning(f"Error fetching related artists for {artist_id}: {e}")
-        return track_ids
+        logger.warning(f"Error fetching Last.fm genres for '{artist_name}': {e}")
+        return []
 
 
 @retry_with_backoff(max_retries=3, base_delay=1)
 def get_search_api_tracks(sp, genre, market="IN", limit=10):
     """
     Fetch tracks using Spotify Search API filtered by genre.
-    
-    Args:
-        sp: Spotipy client instance
-        genre: Genre to search for
-        market: Market code (default "IN" for India)
-        limit: Number of tracks to return (max 10)
-    
-    Returns:
-        list: Track IDs from search results
+    Uses random offset to ensure variety across multiple calls.
+    Returns list of track metadata dicts.
     """
-    track_ids = []
+    tracks_metadata = []
     try:
-        results = sp.search(q=f'genre:"{genre}"', type="track", limit=limit, market=market)
+        offset = random.randint(0, 500)
+        results = sp.search(q=f'genre:"{genre}"', type="track", limit=limit, offset=offset, market=market)
         for track in results.get('tracks', {}).get('items', []):
-            if track.get('id'):
-                track_ids.append(track['id'])
-        return track_ids
+            if track.get('id') and track.get('artists'):
+                tracks_metadata.append({
+                    'id': track['id'],
+                    'artist_id': track['artists'][0]['id'],
+                    'popularity': track.get('popularity', 0),
+                    'release_date': track.get('album', {}).get('release_date', '')
+                })
+        return tracks_metadata
     except Exception as e:
         logger.warning(f"Error searching for genre '{genre}': {e}")
-        return track_ids
+        return tracks_metadata
 
 
 @retry_with_backoff(max_retries=3, base_delay=1)
-def get_seed_artists_with_fallbacks(sp):
+def build_taste_profile_genres(sp):
     """
-    Get seed artists with a graceful fallback hierarchy for cold-start users.
-    
-    Fallback order:
-    1. Primary: User's top artists (current_user_top_artists)
-    2. Fallback 1: User's recently played tracks (extract artist IDs)
-    3. Fallback 2 (Cold Start): Empty list (skip taste portion entirely)
-    
-    Returns:
-        tuple: (list of artist IDs, genres set, is_cold_start boolean)
+    Aggregate unique genres using Last.fm API as a workaround for Spotify's
+    deprecated genre data and locked-down artist lookups.
     """
+    taste_genres = set()
+    artist_names = set()
+    
+    # Source 1: Top Artists
+    logger.info("Building taste profile: fetching top artists...")
     try:
-        # Primary: Try top artists
         top_artists_response = sp.current_user_top_artists(limit=20, time_range='short_term')
-        top_artists = top_artists_response.get('items', [])
-        
-        if top_artists:
-            taste_genres = set()
-            for artist in top_artists:
-                taste_genres.update(artist.get('genres', []))
-            
-            artist_ids = [a['id'] for a in random.sample(top_artists, min(5, len(top_artists)))]
-            logger.info(f"Using {len(artist_ids)} seed artists from top artists")
-            return artist_ids, taste_genres, False
-        
-        logger.info("No top artists found, trying recently played tracks...")
-        
-        # Fallback 1: Try recently played
-        recently_played = sp.current_user_recently_played(limit=20)
-        recent_artists = set()
-        for item in recently_played.get('items', []):
-            track = item.get('track', {})
-            for artist in track.get('artists', []):
-                recent_artists.add(artist['id'])
-        
-        if recent_artists:
-            # Extract genres from recent artists
-            taste_genres = set()
-            for artist_id in list(recent_artists)[:5]:
-                try:
-                    artist = sp.artist(artist_id)
-                    taste_genres.update(artist.get('genres', []))
-                except Exception as e:
-                    logger.warning(f"Error fetching artist {artist_id}: {e}")
-            
-            artist_ids = list(random.sample(recent_artists, min(5, len(recent_artists))))
-            logger.info(f"Using {len(artist_ids)} seed artists from recently played")
-            return artist_ids, taste_genres, False
-        
-        logger.warning("No listening history found - cold start user detected")
-        return [], set(), True
-        
+        for artist in top_artists_response.get('items', []):
+            artist_names.add(artist['name'])
     except Exception as e:
-        logger.error(f"Error getting seed artists: {e}")
-        return [], set(), False
+        logger.warning(f"Error fetching top artists: {e}")
+    
+    # Source 2: Followed Artists
+    logger.info("Building taste profile: fetching followed artists...")
+    try:
+        followed_response = sp.current_user_followed_artists(limit=20)
+        for artist in followed_response.get('artists', {}).get('items', []):
+            artist_names.add(artist['name'])
+    except Exception as e:
+        logger.warning(f"Error fetching followed artists: {e}")
+    
+    # Source 3: Liked Songs (Saved Tracks)
+    logger.info("Building taste profile: fetching liked songs...")
+    try:
+        saved_tracks_response = sp.current_user_saved_tracks(limit=30)
+        for item in saved_tracks_response.get('items', []):
+            artists = item.get('track', {}).get('artists', [])
+            if artists:
+                artist_names.add(artists[0]['name'])
+    except Exception as e:
+        logger.warning(f"Error fetching liked songs: {e}")
+    
+    # Source 4: Personal Playlists
+    logger.info("Building taste profile: fetching personal playlists...")
+    try:
+        playlists_response = sp.current_user_playlists(limit=10)
+        playlists = playlists_response.get('items', [])
+        current_user_id = sp.me().get('id')
+        
+        owned_playlists = [p for p in playlists if p.get('owner', {}).get('id') == current_user_id]
+        
+        for playlist in owned_playlists[:3]:
+            try:
+                # Using the new 2026 endpoint /items
+                playlist_items_response = sp._get(f"playlists/{playlist['id']}/items", params={"limit": 20})
+                for item in playlist_items_response.get('items', []):
+                    track = item.get('track')
+                    if track and track.get('artists'):
+                        artist_names.add(track['artists'][0]['name'])
+            except Exception as e:
+                logger.warning(f"Error processing playlist '{playlist.get('name')}': {e}")
+    except Exception as e:
+        logger.warning(f"Error fetching playlists: {e}")
+
+    # Sample artist names and fetch genres from Last.fm
+    if artist_names:
+        sampled_artists = random.sample(list(artist_names), min(25, len(artist_names)))
+        logger.info(f"Fetching genres for {len(sampled_artists)} artists from Last.fm...")
+        
+        for name in sampled_artists:
+            genres = get_lastfm_genres(name)
+            if genres:
+                taste_genres.update(genres)
+            time.sleep(0.25) # Respect Last.fm rate limits
+    
+    logger.info(f"Taste profile complete: {len(taste_genres)} unique genres aggregated via Last.fm")
+    return taste_genres
 
 
 def generate_discovery_tracks(sp, target=40, exclude_played=None):
     """
-    Generate intelligent discovery candidate tracks based on user taste.
-    
-    NEW Strategy (Recommendations API Fallback):
-    1. Get seed artists with fallback hierarchy:
-       - Primary: User's top artists
-       - Fallback 1: Recently played tracks (extract artists)
-       - Fallback 2 (Cold Start): None (skip taste portion)
-    
-    2. Taste Portion (80% if seed artists available):
-       - For each seed artist, fetch related artists
-       - Pick top tracks from related artists
-       - Add to candidate pool
-    
-    3. Wildcard Portion (20% normally, 100% for cold start):
-       - Pick random genres NOT in user's taste
-       - Use Search API with genre filter: sp.search(q=f'genre:"{genre}"')
-       - Add to candidate pool
-    
-    4. Filtering:
-       - Filter out all tracks in exclude_played set
-       - Loop until target count is reached
+    Generate discovery tracks using V2 Architecture:
+    1. Candidate Pooling: Gather >= 120 unique unplayed tracks.
+    2. Mathematical Scoring: Score tracks by popularity and freshness.
+    3. Diversity Constraints: Limit to 2 tracks per artist.
     
     Args:
         sp: Spotipy client instance
@@ -212,109 +239,103 @@ def generate_discovery_tracks(sp, target=40, exclude_played=None):
     if exclude_played is None:
         exclude_played = set()
     
-    all_tracks = []
+    candidate_pool = []
+    seen_ids = set()
     filtered_count = 0
     iterations = 0
-    max_iterations = 10
+    max_iterations = 15
+    pool_size_goal = 120
     
-    while len(all_tracks) < target and iterations < max_iterations:
+    # Build comprehensive taste profile at the start
+    logger.info("Building comprehensive taste profile...")
+    taste_genres = build_taste_profile_genres(sp)
+    is_cold_start = len(taste_genres) == 0
+    logger.info(f"Taste profile: {len(taste_genres)} unique genres, Cold start: {is_cold_start}")
+    
+    while len(candidate_pool) < pool_size_goal and iterations < max_iterations:
         iterations += 1
-        logger.info(f"Discovery iteration {iterations}: collecting tracks (have {len(all_tracks)}/{target})")
+        logger.info(f"Discovery iteration {iterations}: collecting candidates (have {len(candidate_pool)}/{pool_size_goal})")
         
         try:
-            # Step 1: Get seed artists with fallback hierarchy
-            seed_artist_ids, taste_genres, is_cold_start = get_seed_artists_with_fallbacks(sp)
-            logger.info(f"Cold start user: {is_cold_start}, Seed artists: {len(seed_artist_ids)}")
-            
-            # Step 2: Fetch taste-based tracks (80%) using related artists API
+            # Step 1: Fetch taste-based tracks (80%) using Search API
             taste_tracks = []
-            if seed_artist_ids:
-                logger.info(f"Fetching taste-based tracks (80%) via Related Artists API...")
+            if taste_genres:
+                taste_quota = min(40, int(pool_size_goal * 0.8))
+                genres_to_search = random.sample(list(taste_genres), min(10, len(taste_genres)))
                 
-                taste_quota = min(32, int(target * 0.8))
-                for artist_id in seed_artist_ids:
+                for genre in genres_to_search:
                     if len(taste_tracks) >= taste_quota:
                         break
-                    try:
-                        related_tracks = get_related_artists_tracks(sp, artist_id, market="IN")
-                        taste_tracks.extend(related_tracks)
-                    except Exception as e:
-                        logger.warning(f"Error getting related artists tracks for {artist_id}: {e}")
-                
-                logger.info(f"Got {len(taste_tracks)} taste-based tracks from related artists")
-            else:
-                logger.info("No seed artists available, skipping taste-based portion")
+                    search_results = get_search_api_tracks(sp, genre, market="IN", limit=10)
+                    taste_tracks.extend(search_results)
             
-            time.sleep(0.5)
-            
-            # Step 3: Fetch wildcard tracks using Search API
+            # Step 2: Fetch wildcard tracks (20%)
             wildcard_tracks = []
-            try:
-                available_genres = sp.recommendation_genre_seeds()['genres']
-                wildcard_genres = [g for g in available_genres if g not in taste_genres]
+            available_wildcard = [g for g in WILDCARD_GENRES if g not in taste_genres]
+            if available_wildcard:
+                wildcard_quota = pool_size_goal if is_cold_start else min(20, int(pool_size_goal * 0.2))
+                sampled_wildcard = random.sample(available_wildcard, min(5, len(available_wildcard)))
                 
-                if wildcard_genres:
-                    # For cold start, use 100% wildcard; otherwise 20%
-                    wildcard_quota = target if is_cold_start else min(8, int(target * 0.2))
-                    
-                    while len(wildcard_tracks) < wildcard_quota and wildcard_genres:
-                        sampled_wildcard = random.sample(
-                            wildcard_genres,
-                            min(2, len(wildcard_genres))
-                        )
-                        logger.info(f"Fetching wildcard tracks ({len(wildcard_tracks)}/{wildcard_quota}) "
-                                  f"via Search API with genres: {sampled_wildcard}")
-                        
-                        for genre in sampled_wildcard:
-                            if len(wildcard_tracks) >= wildcard_quota:
-                                break
-                            try:
-                                search_tracks = get_search_api_tracks(sp, genre, market="IN", limit=10)
-                                wildcard_tracks.extend(search_tracks)
-                            except Exception as e:
-                                logger.warning(f"Error searching genre '{genre}': {e}")
-                    
-                    logger.info(f"Got {len(wildcard_tracks)} wildcard tracks from Search API")
-            except Exception as e:
-                logger.warning(f"Error fetching wildcard tracks: {e}")
+                for genre in sampled_wildcard:
+                    if len(wildcard_tracks) >= wildcard_quota:
+                        break
+                    search_results = get_search_api_tracks(sp, genre, market="IN", limit=10)
+                    wildcard_tracks.extend(search_results)
             
-            time.sleep(0.5)
-            
-            # Step 4: Combine and filter
+            # Step 3: Deduplicate and add to pool
             iteration_tracks = taste_tracks + wildcard_tracks
             initial_count = len(iteration_tracks)
             
-            for track_id in iteration_tracks:
-                if track_id not in exclude_played and track_id not in all_tracks:
-                    all_tracks.append(track_id)
+            for track in iteration_tracks:
+                if track['id'] not in exclude_played and track['id'] not in seen_ids:
+                    candidate_pool.append(track)
+                    seen_ids.add(track['id'])
             
-            iteration_filtered = initial_count - len([t for t in iteration_tracks if t not in exclude_played])
+            iteration_filtered = initial_count - len([t for t in iteration_tracks if t['id'] not in exclude_played])
             filtered_count += iteration_filtered
             
             logger.info(
                 f"Iteration {iterations}: {len(iteration_tracks)} tracks fetched, "
                 f"{iteration_filtered} filtered (already played), "
-                f"{len(all_tracks)} total unique unplayed"
+                f"{len(candidate_pool)} total unique candidates"
             )
             
         except Exception as e:
             logger.error(f"Error in iteration {iterations}: {e}")
             break
         
-        if len(all_tracks) < target:
+        if len(candidate_pool) < pool_size_goal:
             time.sleep(1)
     
-    # Shuffle for randomness
-    random.shuffle(all_tracks)
+    # Step 4: Mathematical Scoring
+    logger.info(f"Scoring {len(candidate_pool)} candidates...")
+    for track in candidate_pool:
+        track['score'] = score_track(track)
     
-    result_count = min(len(all_tracks), target)
+    # Sort descending by score
+    candidate_pool.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Step 5: Apply Diversity Constraints (Max 2 tracks per artist)
+    artist_counts = {}
+    final_tracks = []
+    
+    for track in candidate_pool:
+        current_artist_count = artist_counts.get(track['artist_id'], 0)
+        if current_artist_count >= 2:
+            continue
+            
+        final_tracks.append(track['id'])
+        artist_counts[track['artist_id']] = current_artist_count + 1
+        
+        if len(final_tracks) >= target:
+            break
+            
     logger.info(
-        f"Generated {result_count} unplayed discovery tracks in {iterations} iterations "
-        f"(filtered {filtered_count} already-played tracks)"
+        f"Final selection: {len(final_tracks)} tracks from {len(artist_counts)} artists. "
+        f"(Pool size: {len(candidate_pool)}, Total filtered: {filtered_count})"
     )
     
-    return all_tracks[:target], filtered_count
-
+    return final_tracks, filtered_count
 
 def ensure_playlist(sp, name="Discovery Engine"):
     """

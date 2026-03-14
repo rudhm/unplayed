@@ -337,7 +337,7 @@ def generate_discovery_tracks(sp, target=40, exclude_played=None):
     
     return final_tracks, filtered_count
 
-def ensure_playlist(sp, name="Discovery Engine"):
+def ensure_playlist(sp, name="Unplayed"):
     """
     Get or create the Discovery Engine playlist.
     

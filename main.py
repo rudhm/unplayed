@@ -4,7 +4,7 @@ from datetime import datetime
 
 from spotify_client import get_spotify
 from database import init_db, store_recent_tracks, get_played_tracks, log_run_stats, get_stats
-from discovery import random_tracks, ensure_playlist, update_playlist
+from discovery import generate_discovery_tracks, ensure_playlist, update_playlist
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,9 +54,9 @@ def main():
         logger.info(f"✓ Loaded {len(played_tracks)} played tracks")
         
         # Phase 5: Generate candidate tracks with filtering
-        logger.info("Step 5: Generating random candidate tracks...")
-        tracks, filtered_count = random_tracks(sp, target=100, exclude_played=played_tracks)
-        logger.info(f"✓ Generated {len(tracks)} unplayed candidate tracks")
+        logger.info("Step 5: Generating intelligent discovery tracks...")
+        tracks, filtered_count = generate_discovery_tracks(sp, target=40, exclude_played=played_tracks)
+        logger.info(f"✓ Generated {len(tracks)} unplayed discovery tracks")
         
         # Phase 6: Update playlist with deduplication
         logger.info("Step 6: Ensuring playlist exists...")

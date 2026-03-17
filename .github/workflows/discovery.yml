@@ -31,7 +31,7 @@ jobs:
           # Map the GitHub Secrets to the environment variables your script expects
           # Note: SPOTIPY_CACHE_JSON should be the full JSON object from .cache file
           # If you get "Failed to decode SPOTIFY_CACHE_JSON", see SPOTIFY_TROUBLESHOOTING.md
-          SPOTIPY_CLIENT_ID: ${{ secrets.SPOTIPY_CLIENT_ID }}
-          SPOTIPY_CLIENT_SECRET: ${{ secrets.SPOTIPY_CLIENT_SECRET }}
+          SPOTIPY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIPY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           SPOTIPY_REDIRECT_URI: ${{ secrets.SPOTIPY_REDIRECT_URI }}
           SPOTIFY_CACHE_JSON: ${{ secrets.SPOTIFY_CACHE_JSON }}

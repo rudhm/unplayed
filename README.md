@@ -1,14 +1,16 @@
 # 🎧 Unplayed: Discover Songs You've Actually Never Heard
 
-> **Works with Spotify Free & Premium** | Generates 40 personalized track recommendations using Last.fm intelligence
+> **Requires Spotify Premium** | Generates 40 personalized track recommendations using Last.fm intelligence
 
 Spotify recommends songs you might like, but it still repeats artists you've already heard. Unplayed solves this by using a **Hybrid Discovery Architecture** that combines Last.fm's taste intelligence with your optional local listening history to generate genuinely fresh recommendations.
 
-The problem with Spotify's recommendations is real: you get stuck in loops with the same artists, the algorithm doesn't remember what you've actually played, and "personalized" starts to feel formulaic. This script solves that through intelligent music discovery that works for **everyone**.
+The problem with Spotify's recommendations is real: you get stuck in loops with the same artists, the algorithm doesn't remember what you've actually played, and "personalized" starts to feel formulaic. This script solves that through intelligent music discovery.
+
+> ⚠️ **Spotify Premium is required.** Playlist management features used by this tool are only available to Spotify Premium subscribers.
 
 ## 🏗️ Hybrid Architecture
 
-Unplayed uses a three-layer architecture designed to work with **Spotify Free** accounts:
+Unplayed uses a three-layer architecture that requires a **Spotify Premium** account:
 
 1. **🧠 Intelligence Layer (Last.fm)** - No authentication required
    - Analyzes your top artists and similar artists
@@ -20,16 +22,15 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
    - Uses your Spotify data export files
    - 100% privacy - stays on your machine
 
-3. **🎵 Output Layer (Spotify)** - Free tier compatible
-   - Updates your "Unplayed Discoveries" playlist (Premium/Developer)
-   - OR exports to local files with clickable search links (Free/Restricted)
-   - Graceful fallback - always delivers recommendations
+3. **🎵 Output Layer (Spotify)** - **Premium required**
+   - Updates your "Unplayed Discoveries" playlist
+   - Playlist management APIs require Spotify Premium
 
 ## ✨ Key Features
 
-**🎯 100% Success Rate**: Never crashes. If Spotify API is restricted, automatically exports to beautifully formatted Markdown + CSV files with clickable search links.
+**🎯 High Success Rate**: Generates genuine recommendations powered by Last.fm's community database and your listening taste.
 
-**🆓 Spotify Free Compatible**: Works perfectly with free accounts. Premium users get playlist updates; Free users get local exports.
+**💎 Spotify Premium Required**: Playlist management APIs used to update your "Unplayed Discoveries" playlist are only available on Spotify Premium.
 
 **🎨 Beautiful Terminal UI**: Rich, colorful output with tables showing your top 10 recommendations.
 
@@ -47,7 +48,7 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
 
 **Required:**
 - **Python 3.11+** (this project uses `uv` for package management)
-- **Spotify Account** (Free or Premium - both work!)
+- **Spotify Premium Account** (Premium is required for playlist management)
 - **Spotify Developer App** (free at [developer.spotify.com](https://developer.spotify.com))
 - **Last.fm API Key** (free at [last.fm/api](https://www.last.fm/api))
 - **Last.fm Account** with scrobbling history (connect your Spotify to Last.fm)
@@ -93,17 +94,9 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
 
    **Expected behavior:**
    - ✅ Phase 1-3: Generates recommendations using Last.fm (always works)
-   - ✅ Phase 4: Attempts to update Spotify playlist
-     - **Premium/Developer accounts**: Playlist updated successfully
-     - **Free/Restricted accounts**: Exports to `output/discoveries_TIMESTAMP.md` and `.csv`
+   - ✅ Phase 4: Updates your "Unplayed Discoveries" Spotify playlist
+     - **Spotify Premium required** for playlist management
    
-   **Output files** (when Spotify API is restricted):
-   ```
-   output/
-   ├── discoveries_20260328_092837.md  ← Markdown with clickable links
-   └── discoveries_20260328_092837.csv ← Spreadsheet format
-   ```
-
    ⚠️ **Updating from older version?** Delete `.cache` first:
    ```bash
    rm .cache
@@ -112,7 +105,7 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
 
 ### GitHub Actions Setup
 
-**Note:** GitHub Actions may encounter Spotify API restrictions. The pipeline will automatically fall back to exporting recommendations as artifacts.
+**Note:** GitHub Actions requires a valid Spotify Premium account token. Ensure your `SPOTIFY_CACHE_JSON` secret is up to date.
 
 To automate this with GitHub Actions, set these **Repository Secrets** (Settings → Secrets and variables → Actions):
 
@@ -159,11 +152,8 @@ This is the most common source of setup errors. Follow these steps exactly:
 
 ## 📁 Output Formats
 
-### Spotify Playlist (Premium/Developer accounts)
-When the Spotify API allows, tracks are added directly to your "Unplayed Discoveries" playlist.
-
-### Local Export Files (Free/Restricted accounts)
-When Spotify API returns 403 or other restrictions, recommendations are exported to local files:
+### Spotify Playlist (Premium required)
+Tracks are added directly to your "Unplayed Discoveries" playlist. A Spotify Premium account is required for this feature.
 
 #### Markdown Format (`output/discoveries_TIMESTAMP.md`)
 ```markdown
@@ -303,20 +293,18 @@ cp .env.example .env
 3. Connect Spotify to Last.fm if not already done
 4. Wait for some scrobbles to accumulate (at least 10-20 artists recommended)
 
-### Local export fallback triggered (403 Forbidden)
+### 403 Forbidden from Spotify
 
-**This is not an error!** It's the expected behavior for Spotify Free accounts or when API restrictions apply.
+**Cause:** Your Spotify account is not Premium, or your token lacks the required scopes.
 
-**What happens:**
-- Pipeline completes successfully
-- Recommendations exported to `output/` directory
-- Terminal displays top 10 tracks
-- All tracks have clickable Spotify search URLs
-
-**To use the recommendations:**
-1. Open `output/discoveries_TIMESTAMP.md` in any markdown viewer
-2. Click the search links to find tracks on Spotify
-3. Or import `output/discoveries_TIMESTAMP.csv` to your favorite tool
+**Fix:**
+1. Ensure you have an active **Spotify Premium** subscription
+2. Delete your local `.cache` and re-authorize:
+   ```bash
+   rm .cache
+   python main.py
+   ```
+3. Verify your Spotify Developer App has the correct redirect URI (`http://127.0.0.1:8888/callback`)
 
 ---
 
@@ -334,7 +322,7 @@ cp .env.example .env
 ## FAQ
 
 **Q: Do I need Spotify Premium?**  
-A: No! The system works for both Free and Premium users. Premium users get playlist updates; Free users get local exports with clickable links.
+A: Yes. Playlist management (adding tracks to your "Unplayed Discoveries" playlist) requires a Spotify Premium subscription. The tool will not work without it.
 
 **Q: Why do I need a Last.fm account?**  
 A: Last.fm provides the intelligence layer for recommendations. Connect your Spotify to Last.fm to build your listening history, then use that username in the `.env` file.

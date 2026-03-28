@@ -29,3 +29,6 @@ Thumbs.db
 
 # Spotify OAuth cache - MUST NOT be tracked
 .cache
+
+# Discovery export files
+output/

@@ -15,6 +15,17 @@ from typing import List, Dict, Set, Optional, Tuple
 from datetime import datetime
 from functools import wraps
 import time
+import os
+import csv
+from urllib.parse import quote
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 from lastfm_client import get_lastfm_client
 from spotify_export_loader import load_spotify_export
@@ -22,6 +33,7 @@ from spotify_resolver import create_resolver
 from utils import get_track_id
 
 logger = logging.getLogger(__name__)
+console = Console() if RICH_AVAILABLE else None
 
 
 def retry_with_backoff(max_retries=3, base_delay=1):
@@ -504,6 +516,120 @@ def update_playlist(sp, playlist_id: str, track_uris: List[str]) -> int:
         return 0
 
 
+def export_to_local_file(
+    recommendations: List[Dict],
+    output_dir: str = "output",
+    format: str = "markdown"
+) -> str:
+    """
+    Export recommendations to local file as fallback when Spotify API fails.
+    
+    Args:
+        recommendations: List of track dicts with artist/track/score keys
+        output_dir: Directory to save file
+        format: 'markdown' or 'csv'
+    
+    Returns:
+        Path to exported file
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if format == "markdown":
+        filepath = os.path.join(output_dir, f"discoveries_{timestamp}.md")
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("# 🎵 Unplayed Discoveries\n\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write(f"Total recommendations: {len(recommendations)}\n\n")
+            f.write("---\n\n")
+            
+            for i, track in enumerate(recommendations, 1):
+                artist = track.get('artist_display', track.get('artist', 'Unknown'))
+                track_name = track.get('track_display', track.get('track', 'Unknown'))
+                score = track.get('score', 0.0)
+                
+                # Generate Spotify search URL
+                search_query = f"{artist} {track_name}"
+                encoded_query = quote(search_query)
+                spotify_url = f"https://open.spotify.com/search/{encoded_query}"
+                
+                f.write(f"## {i}. {artist} - {track_name}\n\n")
+                f.write(f"**Score:** {score:.3f}\n\n")
+                f.write(f"🔗 [Search on Spotify]({spotify_url})\n\n")
+                f.write("---\n\n")
+    
+    else:  # CSV format
+        filepath = os.path.join(output_dir, f"discoveries_{timestamp}.csv")
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Rank', 'Artist', 'Track', 'Score', 'Spotify Search URL'])
+            
+            for i, track in enumerate(recommendations, 1):
+                artist = track.get('artist_display', track.get('artist', 'Unknown'))
+                track_name = track.get('track_display', track.get('track', 'Unknown'))
+                score = track.get('score', 0.0)
+                
+                search_query = f"{artist} {track_name}"
+                encoded_query = quote(search_query)
+                spotify_url = f"https://open.spotify.com/search/{encoded_query}"
+                
+                writer.writerow([i, artist, track_name, f"{score:.3f}", spotify_url])
+    
+    logger.info(f"✓ Exported {len(recommendations)} tracks to {filepath}")
+    return filepath
+
+
+def display_recommendations_terminal(recommendations: List[Dict], exported_file: str = None):
+    """
+    Display top recommendations in a rich terminal format.
+    
+    Args:
+        recommendations: List of track dicts
+        exported_file: Path to exported file
+    """
+    if not RICH_AVAILABLE or not console:
+        # Fallback to simple print
+        logger.info("=" * 60)
+        logger.info("TOP 10 RECOMMENDATIONS")
+        logger.info("=" * 60)
+        for i, track in enumerate(recommendations[:10], 1):
+            artist = track.get('artist_display', track.get('artist', 'Unknown'))
+            track_name = track.get('track_display', track.get('track', 'Unknown'))
+            score = track.get('score', 0.0)
+            logger.info(f"{i:2d}. {artist} - {track_name} (score: {score:.3f})")
+        logger.info("=" * 60)
+        if exported_file:
+            logger.info(f"\n📁 Full list exported to: {exported_file}")
+        return
+    
+    # Rich table display
+    table = Table(title="🎵 Top 10 Recommended Tracks", show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Artist", style="cyan", no_wrap=False)
+    table.add_column("Track", style="green", no_wrap=False)
+    table.add_column("Score", justify="right", style="yellow")
+    
+    for i, track in enumerate(recommendations[:10], 1):
+        artist = track.get('artist_display', track.get('artist', 'Unknown'))
+        track_name = track.get('track_display', track.get('track', 'Unknown'))
+        score = track.get('score', 0.0)
+        table.add_row(str(i), artist, track_name, f"{score:.3f}")
+    
+    console.print("\n")
+    console.print(table)
+    
+    if exported_file:
+        console.print("\n")
+        console.print(Panel(
+            f"[bold green]✓ Full recommendations exported![/bold green]\n\n"
+            f"📁 File: [cyan]{exported_file}[/cyan]\n"
+            f"📊 Total tracks: [yellow]{len(recommendations)}[/yellow]\n\n"
+            f"[dim]Open the file to see clickable Spotify search links for all tracks.[/dim]",
+            title="Export Complete",
+            border_style="green"
+        ))
+
+
 def resolve_and_output(
     sp,
     recommendations: List[Dict],
@@ -511,6 +637,7 @@ def resolve_and_output(
 ) -> Tuple[str, int, Dict]:
     """
     Resolve tracks to Spotify URIs and update playlist.
+    Falls back to local file export if Spotify API fails (403 or other errors).
     
     Args:
         sp: Spotipy client instance
@@ -528,56 +655,104 @@ def resolve_and_output(
         'recommendations_input': len(recommendations),
         'uris_resolved': 0,
         'resolution_failures': 0,
-        'tracks_added': 0
+        'tracks_added': 0,
+        'fallback_used': False,
+        'fallback_file': None
     }
     
-    # Create resolver
-    resolver = create_resolver(sp)
-    
-    # Resolve tracks to URIs
-    logger.info(f"Resolving {len(recommendations)} tracks to Spotify URIs...")
-    
-    track_list = [
-        {
-            'artist': rec.get('artist_display', rec.get('artist')),
-            'track': rec.get('track_display', rec.get('track'))
-        }
-        for rec in recommendations
-    ]
-    
-    uris = resolver.resolve_batch(track_list, max_failures=10)
-    
-    stats['uris_resolved'] = len(uris)
-    stats['resolution_failures'] = len(recommendations) - len(uris)
-    
-    logger.info(f"✓ Resolved {len(uris)}/{len(recommendations)} tracks to URIs")
-    
-    resolver_stats = resolver.get_statistics()
-    logger.info(
-        f"  Cache: {resolver_stats['cache_hit_rate']:.1%} hit rate, "
-        f"{resolver_stats['api_calls']} API calls"
-    )
-    
-    if not uris:
-        logger.error("No URIs resolved! Cannot update playlist.")
-        return "", 0, stats
-    
-    # Ensure playlist exists
     try:
-        playlist_id = ensure_playlist(sp, playlist_name)
-    except Exception as e:
-        logger.error(f"Failed to create/find playlist: {e}")
-        return "", 0, stats
+        # Create resolver
+        resolver = create_resolver(sp)
+        
+        # Resolve tracks to URIs
+        logger.info(f"Resolving {len(recommendations)} tracks to Spotify URIs...")
+        
+        track_list = [
+            {
+                'artist': rec.get('artist_display', rec.get('artist')),
+                'track': rec.get('track_display', rec.get('track'))
+            }
+            for rec in recommendations
+        ]
+        
+        uris = resolver.resolve_batch(track_list, max_failures=10)
+        
+        stats['uris_resolved'] = len(uris)
+        stats['resolution_failures'] = len(recommendations) - len(uris)
+        
+        logger.info(f"✓ Resolved {len(uris)}/{len(recommendations)} tracks to URIs")
+        
+        resolver_stats = resolver.get_statistics()
+        logger.info(
+            f"  Cache: {resolver_stats['cache_hit_rate']:.1%} hit rate, "
+            f"{resolver_stats['api_calls']} API calls"
+        )
+        
+        if not uris:
+            logger.warning("No URIs resolved! Falling back to local export.")
+            raise Exception("URI resolution failed - triggering fallback")
+        
+        # Ensure playlist exists
+        try:
+            playlist_id = ensure_playlist(sp, playlist_name)
+        except Exception as e:
+            logger.warning(f"Failed to create/find playlist: {e}")
+            logger.warning("Spotify API may be restricted. Falling back to local export.")
+            raise  # Trigger outer exception handler
+        
+        # Update playlist
+        try:
+            tracks_added = update_playlist(sp, playlist_id, uris)
+            stats['tracks_added'] = tracks_added
+            
+            logger.info("=" * 60)
+            logger.info("✓ PHASE 4 COMPLETE - SPOTIFY PLAYLIST UPDATED")
+            logger.info("=" * 60)
+            
+            return playlist_id, tracks_added, stats
+            
+        except Exception as e:
+            logger.warning(f"Failed to update playlist: {e}")
+            logger.warning("Falling back to local export.")
+            raise  # Trigger outer exception handler
     
-    # Update playlist
-    try:
-        tracks_added = update_playlist(sp, playlist_id, uris)
-        stats['tracks_added'] = tracks_added
     except Exception as e:
-        logger.error(f"Failed to update playlist: {e}")
-        return playlist_id, 0, stats
-    
-    return playlist_id, tracks_added, stats
+        # Fallback to local export
+        logger.warning("=" * 60)
+        logger.warning("SPOTIFY API RESTRICTED - USING LOCAL EXPORT FALLBACK")
+        logger.warning("=" * 60)
+        logger.info("This is normal for Spotify Free accounts with restricted API access.")
+        logger.info("Your recommendations will be exported to a local file instead.")
+        
+        # Check if it's specifically a 403 error
+        error_str = str(e)
+        if '403' in error_str or 'Forbidden' in error_str:
+            logger.info("Detected 403 Forbidden - Spotify Premium/Developer restrictions apply.")
+        
+        # Export to both markdown and CSV
+        try:
+            md_file = export_to_local_file(recommendations, format="markdown")
+            csv_file = export_to_local_file(recommendations, format="csv")
+            
+            stats['fallback_used'] = True
+            stats['fallback_file'] = md_file
+            stats['fallback_csv'] = csv_file
+            
+            # Display rich terminal summary
+            display_recommendations_terminal(recommendations, md_file)
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("✓ PHASE 4 COMPLETE - LOCAL EXPORT FALLBACK")
+            logger.info("=" * 60)
+            logger.info(f"Markdown: {md_file}")
+            logger.info(f"CSV: {csv_file}")
+            logger.info("=" * 60)
+            
+            return "LOCAL_EXPORT", len(recommendations), stats
+            
+        except Exception as export_error:
+            logger.error(f"Failed to export to local file: {export_error}")
+            return "", 0, stats
 
 
 # =============================================================================
@@ -710,7 +885,7 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         )
         all_stats['filtering_scoring'] = filter_stats
         
-        # Phase 4: Resolve and output
+        # Phase 4: Resolve and output (with graceful fallback)
         playlist_id, tracks_added, output_stats = resolve_and_output(
             sp,
             recommendations,
@@ -722,18 +897,33 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         logger.info("\n" + "=" * 60)
         logger.info("PIPELINE COMPLETE!")
         logger.info("=" * 60)
-        logger.info(f"Playlist: {playlist_id}")
-        logger.info(f"Tracks added: {tracks_added}")
+        
+        if output_stats.get('fallback_used', False):
+            # Local export fallback was used
+            logger.info(f"Output: Local file export (Spotify API restricted)")
+            logger.info(f"Tracks exported: {tracks_added}")
+            logger.info(f"Markdown file: {output_stats.get('fallback_file', 'N/A')}")
+            logger.info(f"CSV file: {output_stats.get('fallback_csv', 'N/A')}")
+        else:
+            # Spotify playlist was updated successfully
+            logger.info(f"Playlist: {playlist_id}")
+            logger.info(f"Tracks added: {tracks_added}")
+            logger.info(f"Resolution rate: {output_stats['uris_resolved']}/{output_stats['recommendations_input']}")
+        
         logger.info(f"Total candidates: {gen_stats['total_candidates']}")
         logger.info(f"Filtered (played): {filter_stats['filtered_played']}")
-        logger.info(f"Resolution rate: {output_stats['uris_resolved']}/{output_stats['recommendations_input']}")
         logger.info("=" * 60 + "\n")
         
         return {
             'success': True,
             'playlist_id': playlist_id,
             'tracks_added': tracks_added,
-            'stats': all_stats
+            'stats': all_stats,
+            'fallback_used': output_stats.get('fallback_used', False),
+            'export_files': {
+                'markdown': output_stats.get('fallback_file'),
+                'csv': output_stats.get('fallback_csv')
+            } if output_stats.get('fallback_used', False) else None
         }
     
     except Exception as e:

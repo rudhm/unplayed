@@ -7,6 +7,15 @@ DB = "history.db"
 
 
 def init_db():
+    """
+    Initialize the history database.
+    
+    Note: In the Hybrid Architecture, the played_tracks table is no longer
+    populated from Spotify API (which requires Premium). Instead, play history
+    comes from local GDPR exports loaded by SpotifyExportLoader.
+    
+    This table structure is kept for backward compatibility and future use.
+    """
     with sqlite3.connect(DB) as conn:
         cur = conn.cursor()
 
@@ -34,28 +43,6 @@ def init_db():
             api_failures TEXT DEFAULT ''
         )
         """)
-
-        conn.commit()
-
-
-def store_recent_tracks(sp):
-    with sqlite3.connect(DB) as conn:
-        cur = conn.cursor()
-
-        results = sp.current_user_recently_played(limit=50)
-
-        for item in results["items"]:
-            track = item["track"]
-
-            cur.execute(
-                "INSERT OR IGNORE INTO played_tracks VALUES (?, ?, ?, ?)",
-                (
-                    track["id"],
-                    track["artists"][0]["id"],
-                    track["album"]["id"],
-                    item["played_at"]
-                )
-            )
 
         conn.commit()
 

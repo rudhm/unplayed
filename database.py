@@ -26,7 +26,12 @@ def init_db():
             total_tracks_played INTEGER,
             unique_artists INTEGER,
             new_tracks_added INTEGER,
-            filtered_count INTEGER
+            filtered_count INTEGER,
+            top_artists_used INTEGER DEFAULT 0,
+            followed_artists_used INTEGER DEFAULT 0,
+            saved_tracks_used INTEGER DEFAULT 0,
+            playlists_used INTEGER DEFAULT 0,
+            api_failures TEXT DEFAULT ''
         )
         """)
 
@@ -135,7 +140,7 @@ def get_stats():
         }
 
 
-def log_run_stats(run_id, new_tracks_added, filtered_count):
+def log_run_stats(run_id, new_tracks_added, filtered_count, api_stats=None):
     """
     Log statistics for a discovery run.
     
@@ -143,8 +148,12 @@ def log_run_stats(run_id, new_tracks_added, filtered_count):
         run_id: Unique identifier for this run
         new_tracks_added: Number of new tracks added to playlist
         filtered_count: Number of tracks filtered out as already-played
+        api_stats: Dict with API success/failure metrics
     """
     from datetime import datetime
+    
+    if api_stats is None:
+        api_stats = {}
     
     with sqlite3.connect(DB) as conn:
         cur = conn.cursor()
@@ -153,15 +162,21 @@ def log_run_stats(run_id, new_tracks_added, filtered_count):
         
         cur.execute("""
             INSERT INTO discovery_stats 
-            (run_id, run_date, total_tracks_played, unique_artists, new_tracks_added, filtered_count)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (run_id, run_date, total_tracks_played, unique_artists, new_tracks_added, filtered_count,
+             top_artists_used, followed_artists_used, saved_tracks_used, playlists_used, api_failures)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             run_id,
             datetime.utcnow().isoformat(),
             stats["total_tracks_played"],
             stats["unique_artists"],
             new_tracks_added,
-            filtered_count
+            filtered_count,
+            1 if api_stats.get('top_artists_used', False) else 0,
+            1 if api_stats.get('followed_artists_used', False) else 0,
+            1 if api_stats.get('saved_tracks_used', False) else 0,
+            1 if api_stats.get('playlists_used', False) else 0,
+            ','.join(api_stats.get('api_failures', []))
         ))
         
         conn.commit()
@@ -172,5 +187,6 @@ def log_run_stats(run_id, new_tracks_added, filtered_count):
             f"Unique artists: {stats['unique_artists']}, "
             f"New tracks added: {new_tracks_added}, "
             f"Filtered out: {filtered_count}, "
-            f"Discovery rate: {stats['discovery_rate']}"
+            f"APIs used: {sum([api_stats.get(k, False) for k in ['top_artists_used', 'followed_artists_used', 'saved_tracks_used', 'playlists_used']])}/4, "
+            f"Failures: {len(api_stats.get('api_failures', []))}"
         )

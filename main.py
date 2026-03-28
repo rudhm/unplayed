@@ -55,7 +55,7 @@ def main():
         
         # Phase 5: Generate candidate tracks with filtering
         logger.info("Step 5: Generating intelligent discovery tracks...")
-        tracks, filtered_count = generate_discovery_tracks(sp, target=40, exclude_played=played_tracks)
+        tracks, filtered_count, api_stats = generate_discovery_tracks(sp, target=40, exclude_played=played_tracks)
         logger.info(f"✓ Generated {len(tracks)} unplayed discovery tracks")
         
         # Phase 6: Update playlist with deduplication
@@ -69,7 +69,7 @@ def main():
         
         # Phase 7: Log statistics
         logger.info("Step 8: Logging statistics...")
-        log_run_stats(run_id, added_count, filtered_count)
+        log_run_stats(run_id, added_count, filtered_count, api_stats)
         stats = get_stats()
         logger.info(f"✓ Statistics logged")
         logger.info(

@@ -6,7 +6,7 @@ The problem with Spotify's recommendations is real: you get stuck in loops with 
 
 ## ✨ Features
 
-**The Last.fm Bridge**: Spotify locked down their APIs, so we work around it. We map your top artists to Last.fm's open genre database to find what you actually want to hear.
+**The Last.fm Bridge**: Spotify locked down their APIs, so we work around it. We map your artists to Last.fm's open genre database to find what you actually want to hear.
 
 **V2 Scoring Algorithm**: Evaluates 120+ candidate songs and ranks them using a custom formula that balances freshness (new songs) with what matches your taste.
 
@@ -16,12 +16,15 @@ The problem with Spotify's recommendations is real: you get stuck in loops with 
 
 **True Unplayed Guarantee**: Uses a local SQLite database to remember every single song we've ever given you. Zero repeats. Ever.
 
+**Free Tier Compatible**: Works perfectly with Spotify free accounts. Builds your taste profile from followed artists, liked songs, and playlists—no Premium subscription required.
+
 ## Setup Instructions
 
 ### Prerequisites
 
 You'll need:
 - **Python 3.11+** (this project uses `uv` for package management)
+- **Spotify Account** (free or Premium - both work!)
 - **Spotify Developer App** (free at [developer.spotify.com](https://developer.spotify.com))
 - **Last.fm API Key** (free at [last.fm/api](https://www.last.fm/api))
 
@@ -54,6 +57,12 @@ You'll need:
    
    On first run, your browser will open to authorize Spotify. This creates a `.cache` file for authentication.
 
+   ⚠️ **Important:** If you're updating from an older version, delete `.cache` first to regenerate with updated OAuth scopes:
+   ```bash
+   rm .cache
+   python main.py
+   ```
+
 ### GitHub Actions Setup
 
 To automate this with GitHub Actions, set these **Repository Secrets** (Settings → Secrets and variables → Actions):
@@ -67,6 +76,8 @@ To automate this with GitHub Actions, set these **Repository Secrets** (Settings
 | `SPOTIFY_CACHE_JSON` | Local `.cache` file | See below |
 
 #### Storing SPOTIFY_CACHE_JSON
+
+⚠️ **CRITICAL:** After updating the code, regenerate your token locally first, then update the GitHub Secret.
 
 This is the most common source of setup errors. Follow these steps exactly:
 

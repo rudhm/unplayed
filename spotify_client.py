@@ -84,6 +84,7 @@ def get_spotify():
         "playlist-modify-private",
         "playlist-modify-public",
         "user-library-read",
+        "user-top-read",  # Required for current_user_top_artists() - Premium only
     ]
     
     # Detect CI/CD environment (GitHub Actions, etc.)

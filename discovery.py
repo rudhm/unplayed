@@ -343,27 +343,25 @@ def filter_and_score_candidates(
     check_lastfm_playcount: bool = True
 ) -> Tuple[List[Dict], Dict]:
     """
-    Filter and score candidates to produce final recommendations.
+    Filter, score, and select candidates using Diversity-Aware Round-Robin.
     
     Process:
-    1. Filter out tracks in play history (if export data available)
-    2. Score remaining tracks
-    3. Sort by score descending
-    4. Check Last.fm playcount for top candidates (if enabled)
-    5. Return top N unplayed tracks
+    1. Filter out tracks in play history (local exports)
+    2. Score remaining tracks (Artist Weight 80%, Popularity 20%)
+    3. Group tracks by artist
+    4. Apply Artist Slot Budgeting (Max 2 for Top Artists, 1 for Similar)
+    5. Round-Robin selection until target_count is reached
+    6. Verify unplayed status on Last.fm for final selection
     
     Args:
         candidates: List of candidate track dicts
         export_loader: SpotifyExportLoader instance (optional)
-        lastfm_client: LastFmClient instance (optional, for playcount checks)
+        lastfm_client: LastFmClient instance (optional)
         target_count: Number of tracks to return
         check_lastfm_playcount: If True, verify tracks are unplayed on Last.fm
-    
-    Returns:
-        Tuple of (scored_tracks list, stats dict)
     """
     logger.info("=" * 60)
-    logger.info("PHASE 3: FILTERING & SCORING")
+    logger.info("PHASE 3: DIVERSITY-AWARE FILTERING & SELECTION")
     logger.info("=" * 60)
     
     stats = {
@@ -376,20 +374,16 @@ def filter_and_score_candidates(
     
     # Step 1: Filter out played tracks from export data
     unplayed = []
-    
     if export_loader and export_loader.has_data():
         logger.info("Filtering out played tracks from export data...")
         for candidate in candidates:
             artist = candidate.get('artist', '')
             track = candidate.get('track', '')
-            
             if not export_loader.is_track_played(artist, track):
                 unplayed.append(candidate)
             else:
                 stats['filtered_played'] += 1
-        
         logger.info(f"✓ Filtered {stats['filtered_played']} played tracks from exports")
-        logger.info(f"  {len(unplayed)} unplayed candidates remaining")
     else:
         logger.warning("No export data - skipping Spotify play history filtering")
         unplayed = candidates
@@ -399,70 +393,89 @@ def filter_and_score_candidates(
         return [], stats
     
     # Step 2: Score all tracks
-    logger.info("Scoring candidates...")
     for candidate in unplayed:
-        score = score_track(candidate, export_loader)
-        candidate['score'] = score
-    
+        candidate['score'] = score_track(candidate, export_loader)
     stats['scored_tracks'] = len(unplayed)
     
-    # Step 3: Sort by score (highest first)
-    sorted_tracks = sorted(unplayed, key=lambda x: x.get('score', 0), reverse=True)
+    # Step 3: Group tracks by artist and sort each artist's tracks by score
+    artist_groups = {}
+    for track in unplayed:
+        artist = track.get('artist', 'Unknown')
+        if artist not in artist_groups:
+            artist_groups[artist] = []
+        artist_groups[artist].append(track)
     
-    logger.info(f"✓ Scored {len(unplayed)} tracks")
-    logger.info(f"  Top score: {sorted_tracks[0]['score']:.3f}")
-    logger.info(f"  Median score: {sorted_tracks[len(sorted_tracks)//2]['score']:.3f}")
+    for artist in artist_groups:
+        artist_groups[artist].sort(key=lambda x: x.get('score', 0), reverse=True)
     
-    # Step 4: Check Last.fm playcount for top candidates (optimization)
-    if check_lastfm_playcount and lastfm_client and lastfm_client.username:
-        logger.info("Checking Last.fm playcount for top candidates...")
-        logger.info("  (This ensures tracks are truly unplayed)")
+    # Step 4 & 5: Round-Robin selection with Artist Slot Budgeting
+    # Sort artists by their highest-scoring track to prioritize favorites in the first rounds
+    sorted_artists = sorted(
+        artist_groups.keys(),
+        key=lambda a: artist_groups[a][0]['score'],
+        reverse=True
+    )
+    
+    selected_tracks = []
+    artist_counts = {artist: 0 for artist in sorted_artists}
+    
+    # Determine slot budget for each artist
+    # Top artists get 2 slots, similar/discovery artists get 1
+    def get_budget(artist_name):
+        first_track = artist_groups[artist_name][0]
+        return 2 if first_track.get('source') == 'top_artist' else 1
+
+    logger.info(f"Starting Diversity-Aware Round-Robin (Target: {target_count})...")
+    
+    round_num = 1
+    while len(selected_tracks) < target_count * 2 and any(len(artist_groups[a]) > 0 for a in sorted_artists):
+        tracks_added_this_round = 0
         
-        final_tracks = []
-        checked_count = 0
-        
-        # Only check up to 2x target to avoid excessive API calls
-        max_checks = min(len(sorted_tracks), target_count * 2)
-        
-        for candidate in sorted_tracks[:max_checks]:
-            checked_count += 1
+        for artist in sorted_artists:
+            if len(selected_tracks) >= target_count * 2:
+                break
+                
+            # Skip if artist has reached their budget or has no more tracks
+            if artist_counts[artist] >= get_budget(artist) or not artist_groups[artist]:
+                continue
             
+            # Take the next best track for this artist
+            track = artist_groups[artist].pop(0)
+            selected_tracks.append(track)
+            artist_counts[artist] += 1
+            tracks_added_this_round += 1
+            
+        if tracks_added_this_round == 0:
+            break
+            
+        logger.debug(f"  Round {round_num}: Added {tracks_added_this_round} tracks")
+        round_num += 1
+
+    # Step 6: Verify unplayed status on Last.fm for top candidates
+    final_tracks = []
+    if check_lastfm_playcount and lastfm_client and lastfm_client.username:
+        logger.info(f"Verifying top {len(selected_tracks)} candidates on Last.fm...")
+        
+        for candidate in selected_tracks:
             artist = candidate.get('artist_display', candidate.get('artist', ''))
             track = candidate.get('track_display', candidate.get('track', ''))
             
-            # Check if user has played this on Last.fm
             playcount = lastfm_client.get_user_track_playcount(artist, track)
             
             if playcount > 0:
-                logger.debug(f"  ❌ Skipping (Last.fm playcount: {playcount}): {artist} - {track}")
                 stats['filtered_lastfm_played'] += 1
                 continue
             
-            # Track is unplayed - add to final list
             final_tracks.append(candidate)
-            
-            # Stop once we have enough
             if len(final_tracks) >= target_count:
                 break
         
-        logger.info(f"✓ Checked {checked_count} tracks on Last.fm")
-        logger.info(f"  Filtered {stats['filtered_lastfm_played']} already-played tracks")
-        logger.info(f"  Found {len(final_tracks)} truly unplayed tracks")
-        
+        logger.info(f"✓ Last.fm check: Filtered {stats['filtered_lastfm_played']} scrobbled tracks")
     else:
-        # No Last.fm checking - just take top N
-        if not check_lastfm_playcount:
-            logger.info("Last.fm playcount check disabled - using top scored tracks")
-        elif not lastfm_client:
-            logger.warning("No Last.fm client - cannot check playcount")
-        elif not lastfm_client.username:
-            logger.warning("No Last.fm username - cannot check playcount")
-        
-        final_tracks = sorted_tracks[:target_count]
+        final_tracks = selected_tracks[:target_count]
     
     stats['final_count'] = len(final_tracks)
-    
-    logger.info(f"  Selected top {len(final_tracks)} tracks for output")
+    logger.info(f"✓ Selected {len(final_tracks)} diverse tracks across {len(set(t['artist'] for t in final_tracks))} artists")
     
     return final_tracks, stats
 

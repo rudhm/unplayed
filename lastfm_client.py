@@ -3,7 +3,7 @@ import logging
 import requests
 import time
 from functools import wraps
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 
 from utils import normalize_text
 
@@ -357,6 +357,56 @@ class LastFmClient:
             logger.debug(f"Could not fetch user playcount for {artist_name} - {track_name}: {e}")
             # If we can't determine, assume it's not played (better to include than exclude)
             return 0
+
+    def get_all_scrobbles(self) -> Set[str]:
+        """
+        Fetch user's entire scrobble history from Last.fm.
+        
+        Returns:
+            Set of "artist - track" lowercase strings for fast lookup.
+        """
+        if not self.username:
+            logger.warning("No username configured - cannot fetch scrobble history")
+            return set()
+            
+        logger.info(f"Fetching full scrobble history for {self.username}...")
+        scrobbles = set()
+        page = 1
+        total_pages = 1
+        
+        try:
+            while page <= total_pages:
+                data = self._make_request('user.getrecenttracks', {
+                    'user': self.username,
+                    'limit': 200,
+                    'page': page
+                })
+                
+                recent_tracks = data.get('recenttracks', {})
+                attr = recent_tracks.get('@attr', {})
+                total_pages = int(attr.get('totalPages', 1))
+                
+                tracks = recent_tracks.get('track', [])
+                if isinstance(tracks, dict):
+                    tracks = [tracks]
+                
+                for track in tracks:
+                    artist = normalize_text(track.get('artist', {}).get('#text', ''))
+                    track_name = normalize_text(track.get('name', ''))
+                    if artist and track_name:
+                        scrobbles.add(f"{artist} - {track_name}")
+                
+                if page % 5 == 0 or page == total_pages:
+                    logger.info(f"  Fetched {len(scrobbles)} unique scrobbles (page {page}/{total_pages})")
+                
+                page += 1
+                
+            logger.info(f"✓ Successfully fetched {len(scrobbles)} unique scrobbles")
+            return scrobbles
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch scrobble history: {e}")
+            return scrobbles
     
     def get_artist_tags(self, artist_name: str, limit: int = 10) -> List[str]:
         """

@@ -338,27 +338,24 @@ def score_track(
 def filter_and_score_candidates(
     candidates: List[Dict],
     export_loader,
-    lastfm_client=None,
-    target_count: int = 40,
-    check_lastfm_playcount: bool = True
+    heard_tracks: Set[str] = None,
+    target_count: int = 40
 ) -> Tuple[List[Dict], Dict]:
     """
     Filter, score, and select candidates using Diversity-Aware Round-Robin.
     
     Process:
-    1. Filter out tracks in play history (local exports)
+    1. Filter out tracks in play history (local exports + Last.fm scrobbles)
     2. Score remaining tracks (Artist Weight 80%, Popularity 20%)
     3. Group tracks by artist
     4. Apply Artist Slot Budgeting (Max 2 for Top Artists, 1 for Similar)
     5. Round-Robin selection until target_count is reached
-    6. Verify unplayed status on Last.fm for final selection
     
     Args:
         candidates: List of candidate track dicts
         export_loader: SpotifyExportLoader instance (optional)
-        lastfm_client: LastFmClient instance (optional)
+        heard_tracks: Set of "artist - track" lowercase strings from Last.fm
         target_count: Number of tracks to return
-        check_lastfm_playcount: If True, verify tracks are unplayed on Last.fm
     """
     logger.info("=" * 60)
     logger.info("PHASE 3: DIVERSITY-AWARE FILTERING & SELECTION")
@@ -366,27 +363,38 @@ def filter_and_score_candidates(
     
     stats = {
         'candidates_input': len(candidates),
-        'filtered_played': 0,
-        'filtered_lastfm_played': 0,
+        'filtered_played_spotify': 0,
+        'filtered_played_lastfm': 0,
         'scored_tracks': 0,
         'final_count': 0
     }
     
-    # Step 1: Filter out played tracks from export data
+    # Step 1: Filter out played tracks (Single Pass)
     unplayed = []
-    if export_loader and export_loader.has_data():
-        logger.info("Filtering out played tracks from export data...")
-        for candidate in candidates:
-            artist = candidate.get('artist', '')
-            track = candidate.get('track', '')
-            if not export_loader.is_track_played(artist, track):
-                unplayed.append(candidate)
-            else:
-                stats['filtered_played'] += 1
-        logger.info(f"✓ Filtered {stats['filtered_played']} played tracks from exports")
-    else:
-        logger.warning("No export data - skipping Spotify play history filtering")
-        unplayed = candidates
+    logger.info("Filtering candidates against play history...")
+    
+    for candidate in candidates:
+        artist = candidate.get('artist', '')
+        track = candidate.get('track', '')
+        track_key = f"{artist} - {track}"
+        
+        # Check Last.fm bulk history
+        if heard_tracks and track_key in heard_tracks:
+            stats['filtered_played_lastfm'] += 1
+            continue
+            
+        # Check Spotify local exports
+        if export_loader and export_loader.has_data():
+            if export_loader.is_track_played(artist, track):
+                stats['filtered_played_spotify'] += 1
+                continue
+                
+        unplayed.append(candidate)
+
+    logger.info(f"✓ Filtering complete:")
+    logger.info(f"  - Removed {stats['filtered_played_lastfm']} tracks from Last.fm history")
+    logger.info(f"  - Removed {stats['filtered_played_spotify']} tracks from Spotify exports")
+    logger.info(f"  - {len(unplayed)} unique unplayed candidates remain")
     
     if not unplayed:
         logger.error("No unplayed tracks remaining after filtering!")
@@ -409,7 +417,6 @@ def filter_and_score_candidates(
         artist_groups[artist].sort(key=lambda x: x.get('score', 0), reverse=True)
     
     # Step 4 & 5: Round-Robin selection with Artist Slot Budgeting
-    # Sort artists by their highest-scoring track to prioritize favorites in the first rounds
     sorted_artists = sorted(
         artist_groups.keys(),
         key=lambda a: artist_groups[a][0]['score'],
@@ -419,8 +426,6 @@ def filter_and_score_candidates(
     selected_tracks = []
     artist_counts = {artist: 0 for artist in sorted_artists}
     
-    # Determine slot budget for each artist
-    # Top artists get 2 slots, similar/discovery artists get 1
     def get_budget(artist_name):
         first_track = artist_groups[artist_name][0]
         return 2 if first_track.get('source') == 'top_artist' else 1
@@ -428,56 +433,27 @@ def filter_and_score_candidates(
     logger.info(f"Starting Diversity-Aware Round-Robin (Target: {target_count})...")
     
     round_num = 1
-    while len(selected_tracks) < target_count * 2 and any(len(artist_groups[a]) > 0 for a in sorted_artists):
+    while len(selected_tracks) < target_count and any(len(artist_groups[a]) > 0 for a in sorted_artists):
         tracks_added_this_round = 0
-        
         for artist in sorted_artists:
-            if len(selected_tracks) >= target_count * 2:
+            if len(selected_tracks) >= target_count:
                 break
-                
-            # Skip if artist has reached their budget or has no more tracks
             if artist_counts[artist] >= get_budget(artist) or not artist_groups[artist]:
                 continue
-            
-            # Take the next best track for this artist
             track = artist_groups[artist].pop(0)
             selected_tracks.append(track)
             artist_counts[artist] += 1
             tracks_added_this_round += 1
-            
         if tracks_added_this_round == 0:
             break
-            
-        logger.debug(f"  Round {round_num}: Added {tracks_added_this_round} tracks")
         round_num += 1
 
-    # Step 6: Verify unplayed status on Last.fm for top candidates
-    final_tracks = []
-    if check_lastfm_playcount and lastfm_client and lastfm_client.username:
-        logger.info(f"Verifying top {len(selected_tracks)} candidates on Last.fm...")
-        
-        for candidate in selected_tracks:
-            artist = candidate.get('artist_display', candidate.get('artist', ''))
-            track = candidate.get('track_display', candidate.get('track', ''))
-            
-            playcount = lastfm_client.get_user_track_playcount(artist, track)
-            
-            if playcount > 0:
-                stats['filtered_lastfm_played'] += 1
-                continue
-            
-            final_tracks.append(candidate)
-            if len(final_tracks) >= target_count:
-                break
-        
-        logger.info(f"✓ Last.fm check: Filtered {stats['filtered_lastfm_played']} scrobbled tracks")
-    else:
-        final_tracks = selected_tracks[:target_count]
-    
+    final_tracks = selected_tracks[:target_count]
     stats['final_count'] = len(final_tracks)
     logger.info(f"✓ Selected {len(final_tracks)} diverse tracks across {len(set(t['artist'] for t in final_tracks))} artists")
     
     return final_tracks, stats
+
 
 
 # =============================================================================
@@ -963,6 +939,8 @@ def generate_discovery_tracks(
         logger.error("Ensure LASTFM_API_KEY and LASTFM_USERNAME are set in environment")
         raise
     
+    # Fetch full scrobble history once at startup
+    heard_tracks = lastfm_client.get_all_scrobbles()
     export_loader = load_spotify_export()
     
     # Phase 1: Build taste profile
@@ -983,7 +961,7 @@ def generate_discovery_tracks(
     recommendations, filter_stats = filter_and_score_candidates(
         candidates,
         export_loader,
-        lastfm_client=lastfm_client,
+        heard_tracks=heard_tracks,
         target_count=target
     )
     pipeline_stats['filtering_scoring'] = filter_stats
@@ -992,16 +970,15 @@ def generate_discovery_tracks(
         raise Exception("No recommendations after filtering")
     
     # Return track data for external playlist management
-    # (For compatibility with existing main.py)
     track_ids = [rec.get('track_id', '') for rec in recommendations]
-    filtered_count = filter_stats.get('filtered_played', 0)
+    filtered_count = filter_stats.get('filtered_played_spotify', 0) + filter_stats.get('filtered_played_lastfm', 0)
     
     logger.info("\n" + "=" * 60)
     logger.info("PIPELINE SUMMARY")
     logger.info("=" * 60)
     logger.info(f"Taste profile: {taste_stats['total_artists_in_pool']} artists")
     logger.info(f"Candidates: {gen_stats['total_candidates']} tracks")
-    logger.info(f"Filtered: {filter_stats['filtered_played']} played tracks")
+    logger.info(f"Filtered: {filtered_count} played tracks")
     logger.info(f"Final: {len(recommendations)} recommendations")
     logger.info("=" * 60 + "\n")
     
@@ -1039,6 +1016,9 @@ def run_full_pipeline(
     try:
         # Initialize clients
         lastfm_client = get_lastfm_client()
+        
+        # Fetch full scrobble history once at startup
+        heard_tracks = lastfm_client.get_all_scrobbles()
         export_loader = load_spotify_export()
         
         # Phase 1: Build taste profile
@@ -1053,7 +1033,7 @@ def run_full_pipeline(
         recommendations, filter_stats = filter_and_score_candidates(
             candidates,
             export_loader,
-            lastfm_client=lastfm_client,
+            heard_tracks=heard_tracks,
             target_count=target
         )
         all_stats['filtering_scoring'] = filter_stats
@@ -1071,22 +1051,21 @@ def run_full_pipeline(
         logger.info("PIPELINE COMPLETE!")
         logger.info("=" * 60)
         
-        output_method = output_stats.get('output_method', 'unknown')
-        
         # Make.com webhook used
         logger.info(f"Output: Make.com Webhook")
         logger.info(f"Tracks sent to Make.com: {output_stats.get('make_success', 0)}/{output_stats['recommendations_input']}")
         logger.info(f"Reference file: {output_stats.get('fallback_file', 'N/A')}")
         
         logger.info(f"Total candidates: {gen_stats['total_candidates']}")
-        logger.info(f"Filtered (played): {filter_stats['filtered_played']}")
+        filtered_count = filter_stats.get('filtered_played_spotify', 0) + filter_stats.get('filtered_played_lastfm', 0)
+        logger.info(f"Filtered (played): {filtered_count}")
         logger.info("=" * 60 + "\n")
         
         return {
             'success': True,
             'playlist_id': playlist_id,
             'tracks_added': tracks_added,
-            'output_method': output_method,
+            'output_method': 'make_webhook',
             'stats': all_stats,
             'make_webhook_used': output_stats.get('make_webhook_used', False),
             'export_files': {

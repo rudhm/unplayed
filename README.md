@@ -6,9 +6,9 @@ Spotify recommends songs you might like, but it still repeats artists you've alr
 
 The problem with Spotify's recommendations is real: you get stuck in loops with the same artists, the algorithm doesn't remember what you've actually played, and "personalized" starts to feel formulaic. This script solves that through intelligent music discovery that works for **everyone**.
 
-## 🏗️ Hybrid Architecture
+## 🏗️ Hybrid Architecture with Multiple Output Options
 
-Unplayed uses a three-layer architecture designed to work with **Spotify Free** accounts:
+Unplayed uses a three-layer architecture with **three output methods** for maximum reliability:
 
 1. **🧠 Intelligence Layer (Last.fm)** - No authentication required
    - Analyzes your top artists and similar artists
@@ -20,24 +20,26 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
    - Uses your Spotify data export files
    - 100% privacy - stays on your machine
 
-3. **🎵 Output Layer (Spotify)** - Free tier compatible
-   - Updates your "Unplayed Discoveries" playlist (Premium/Developer)
-   - OR exports to local files with clickable search links (Free/Restricted)
-   - Graceful fallback - always delivers recommendations
+3. **🎵 Output Layer (Multi-Method)** - Graceful fallback chain
+   - **Option A**: Spotify API - Direct playlist updates (Premium/Developer)
+   - **Option B**: IFTTT Webhook - Official Spotify integration bypasses restrictions
+   - **Option C**: Local Files - Markdown + CSV with clickable search links (always works)
 
 ## ✨ Key Features
 
-**🎯 100% Success Rate**: Never crashes. If Spotify API is restricted, automatically exports to beautifully formatted Markdown + CSV files with clickable search links.
+**🎯 100% Success Rate**: Never crashes. Multiple output methods ensure recommendations always reach you.
 
-**🆓 Spotify Free Compatible**: Works perfectly with free accounts. Premium users get playlist updates; Free users get local exports.
+**🆓 Works for Everyone**: Free, Premium, restricted accounts - all supported with appropriate output method.
+
+**🔗 IFTTT Integration**: Optional webhook integration uses IFTTT's official Spotify connection to bypass API restrictions.
 
 **🎨 Beautiful Terminal UI**: Rich, colorful output with tables showing your top 10 recommendations.
 
-**🔗 Clickable Links**: Every track includes a direct Spotify search URL - works on web, mobile, and desktop.
+**📱 Clickable Links**: Every track includes a direct Spotify search URL - works on web, mobile, and desktop.
 
 **📊 Dual Export**: Markdown (human-readable) and CSV (spreadsheet-compatible) formats.
 
-**🔄 Zero Data Loss**: Recommendations always delivered, even if APIs fail or rate limits hit.
+**🔄 Zero Data Loss**: Recommendations always delivered via one of three output methods.
 
 **🚫 No Repeats**: Optional GDPR export integration ensures you never get tracks you've already heard.
 
@@ -82,26 +84,62 @@ Unplayed uses a three-layer architecture designed to work with **Spotify Free** 
    
    # Optional: Spotify GDPR export for play history filtering
    SPOTIFY_EXPORT_PATH=./spotify_data
+   
+   # Optional: IFTTT webhook for alternative output
+   IFTTT_WEBHOOK_KEY=your_ifttt_webhook_key
    ```
 
-3. **Run the discovery engine:**
+3. **(Optional) Setup Make.com Webhook (Recommended)** for automatic playlist updates when Spotify API is restricted:
+   
+   **Quick Setup:**
+   1. Create account at [make.com](https://www.make.com)
+   2. Create a scenario with **Webhooks** and **Spotify** modules.
+   3. Configure it to add tracks to your "Unplayed Discoveries" playlist.
+   4. Get your webhook URL and add to `.env`: `MAKE_WEBHOOK_URL=https://hook.eu1.make.com/your_id`
+   
+   **Detailed instructions**: See [MAKE_WEBHOOK_SETUP.md](MAKE_WEBHOOK_SETUP.md)
+
+4. **(Optional) Setup IFTTT Webhook** as a fallback:
+   
+   **Quick Setup:**
+   1. Create account at [ifttt.com](https://ifttt.com)
+   2. Connect your Spotify account
+   3. Create applet: [ifttt.com/create](https://ifttt.com/create)
+      - IF: Webhooks → Receive web request → Event: `add_unplayed_track`
+      - THEN: Spotify → Add track to playlist → Search: `{{Value1}} {{Value2}}` → Playlist: `Unplayed Discoveries`
+   4. Get webhook key from [ifttt.com/maker_webhooks/settings](https://ifttt.com/maker_webhooks/settings)
+   5. Add to `.env`: `IFTTT_WEBHOOK_KEY=your_key_here`
+
+5. **Run the discovery engine:**
    ```bash
    python main.py
    ```
    
    On first run, your browser will open to authorize Spotify. This creates a `.cache` file for authentication.
 
-   **Expected behavior:**
-   - ✅ Phase 1-3: Generates recommendations using Last.fm (always works)
-   - ✅ Phase 4: Attempts to update Spotify playlist
-     - **Premium/Developer accounts**: Playlist updated successfully
-     - **Free/Restricted accounts**: Exports to `output/discoveries_TIMESTAMP.md` and `.csv`
+   **Expected behavior** (automatic fallback chain):
+   - ✅ **Option A**: Tries Make.com Webhook (if configured)
+     - Success: Playlist updated via automation
+     - Not configured or fails: Falls through to Option B
    
-   **Output files** (when Spotify API is restricted):
+   - ✅ **Option B**: Tries Spotify API playlist update
+     - Success: Playlist updated directly
+     - 403 Error: Falls through to Option C
+   
+   - ✅ **Option C**: Tries IFTTT webhook (if configured)
+     - Success: Tracks sent to IFTTT → IFTTT adds to playlist
+     - Not configured or fails: Falls through to Option D
+   
+   - ✅ **Option D**: Local file export (always succeeds)
+     - Creates `output/discoveries_TIMESTAMP.md` (clickable links)
+     - Creates `output/discoveries_TIMESTAMP.csv` (spreadsheet format)
+     - Shows top 10 in terminal with rich formatting
+   
+   **Output files** (when local export is used):
    ```
    output/
-   ├── discoveries_20260328_092837.md  ← Markdown with clickable links
-   └── discoveries_20260328_092837.csv ← Spreadsheet format
+   ├── discoveries_20260328_095321.md  ← Markdown with clickable links
+   └── discoveries_20260328_095321.csv ← Spreadsheet format
    ```
 
    ⚠️ **Updating from older version?** Delete `.cache` first:
@@ -334,7 +372,16 @@ cp .env.example .env
 ## FAQ
 
 **Q: Do I need Spotify Premium?**  
-A: No! The system works for both Free and Premium users. Premium users get playlist updates; Free users get local exports with clickable links.
+A: No! The system has three output methods and automatically picks the best one for your account. Premium users get direct API access, Free users get IFTTT or local exports.
+
+**Q: What is IFTTT and do I need it?**  
+A: IFTTT is optional but recommended for Free accounts. It's a free service that uses its official Spotify integration to add tracks when the Spotify API returns 403 errors. Setup takes 5 minutes - see [IFTTT_SETUP_GUIDE.md](IFTTT_SETUP_GUIDE.md).
+
+**Q: How do the three output methods work?**  
+A: Automatic fallback chain:
+1. Tries Spotify API (fastest, Premium/Developer)
+2. If 403, tries IFTTT webhook (if configured, works for Free)
+3. If IFTTT unavailable, exports local files (always works)
 
 **Q: Why do I need a Last.fm account?**  
 A: Last.fm provides the intelligence layer for recommendations. Connect your Spotify to Last.fm to build your listening history, then use that username in the `.env` file.
@@ -360,6 +407,9 @@ A: Yes, but each user needs their own Last.fm account and credentials. You could
 ---
 
 For more technical details, see the documentation:
+- [MAKE_WEBHOOK_SETUP.md](MAKE_WEBHOOK_SETUP.md) - **Primary Setup Guide** (Recommended)
+- [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md) - Automate discovery weekly
+- [WEBHOOK_IMPLEMENTATION.md](WEBHOOK_IMPLEMENTATION.md) - Technical details of webhooks
 - [COMPLETE_ARCHITECTURE.md](COMPLETE_ARCHITECTURE.md) - System architecture and data flow
 - [GRACEFUL_FALLBACK_COMPLETE.md](GRACEFUL_FALLBACK_COMPLETE.md) - Fallback system details  
 - [HYBRID_MIGRATION_COMPLETE.md](HYBRID_MIGRATION_COMPLETE.md) - Migration from old architecture

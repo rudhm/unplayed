@@ -318,6 +318,46 @@ class LastFmClient:
             logger.warning(f"Failed to fetch track info for {artist_name} - {track_name}: {e}")
             return None
     
+    def get_user_track_playcount(self, artist_name: str, track_name: str) -> int:
+        """
+        Get the user's playcount for a specific track.
+        
+        This checks if the authenticated user has ever played this track on Last.fm.
+        Returns 0 if the track has never been scrobbled, or > 0 if it has.
+        
+        Args:
+            artist_name: Name of the artist
+            track_name: Name of the track
+        
+        Returns:
+            User's playcount for this track (0 if never played)
+        """
+        if not self.username:
+            logger.warning("No username configured - cannot check user playcount")
+            return 0
+        
+        try:
+            data = self._make_request('track.getInfo', {
+                'artist': artist_name,
+                'track': track_name,
+                'username': self.username
+            })
+            
+            track = data.get('track', {})
+            if not track:
+                return 0
+            
+            # The 'userplaycount' field is only present if username is provided
+            user_playcount = int(track.get('userplaycount', 0))
+            
+            logger.debug(f"User playcount for {artist_name} - {track_name}: {user_playcount}")
+            return user_playcount
+            
+        except Exception as e:
+            logger.debug(f"Could not fetch user playcount for {artist_name} - {track_name}: {e}")
+            # If we can't determine, assume it's not played (better to include than exclude)
+            return 0
+    
     def get_artist_tags(self, artist_name: str, limit: int = 10) -> List[str]:
         """
         Get top tags (genres) for an artist.

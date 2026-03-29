@@ -4,10 +4,13 @@ Hybrid Discovery Engine for Unplayed.
 Architecture:
 1. INTELLIGENCE (Brain): Last.fm API for taste profiles and candidate generation
 2. MEMORY (History): Local Spotify GDPR exports for filtering played tracks
-3. OUTPUT (Resolution): Spotify API ONLY for URI resolution and playlist management
+3. OUTPUT (Resolution): Multiple output options with graceful fallback
+   - Option A: Spotify API (search & playlists)
+   - Option B: IFTTT Webhook (bypasses Premium restrictions)
+   - Option C: Local file export (always works)
 
 This design eliminates the 403 Forbidden errors from Spotify's user data endpoints
-by using Last.fm as the primary intelligence layer.
+by using Last.fm as the primary intelligence layer and providing multiple output paths.
 """
 
 import logging
@@ -18,6 +21,7 @@ import time
 import os
 import csv
 from urllib.parse import quote
+import requests
 
 try:
     from rich.console import Console
@@ -326,7 +330,9 @@ def score_track(
 def filter_and_score_candidates(
     candidates: List[Dict],
     export_loader,
-    target_count: int = 40
+    lastfm_client=None,
+    target_count: int = 40,
+    check_lastfm_playcount: bool = True
 ) -> Tuple[List[Dict], Dict]:
     """
     Filter and score candidates to produce final recommendations.
@@ -334,12 +340,16 @@ def filter_and_score_candidates(
     Process:
     1. Filter out tracks in play history (if export data available)
     2. Score remaining tracks
-    3. Sort by score and take top N
+    3. Sort by score descending
+    4. Check Last.fm playcount for top candidates (if enabled)
+    5. Return top N unplayed tracks
     
     Args:
         candidates: List of candidate track dicts
         export_loader: SpotifyExportLoader instance (optional)
+        lastfm_client: LastFmClient instance (optional, for playcount checks)
         target_count: Number of tracks to return
+        check_lastfm_playcount: If True, verify tracks are unplayed on Last.fm
     
     Returns:
         Tuple of (scored_tracks list, stats dict)
@@ -351,11 +361,12 @@ def filter_and_score_candidates(
     stats = {
         'candidates_input': len(candidates),
         'filtered_played': 0,
+        'filtered_lastfm_played': 0,
         'scored_tracks': 0,
         'final_count': 0
     }
     
-    # Filter out played tracks
+    # Step 1: Filter out played tracks from export data
     unplayed = []
     
     if export_loader and export_loader.has_data():
@@ -369,17 +380,17 @@ def filter_and_score_candidates(
             else:
                 stats['filtered_played'] += 1
         
-        logger.info(f"✓ Filtered {stats['filtered_played']} played tracks")
+        logger.info(f"✓ Filtered {stats['filtered_played']} played tracks from exports")
         logger.info(f"  {len(unplayed)} unplayed candidates remaining")
     else:
-        logger.warning("No export data - skipping play history filtering")
+        logger.warning("No export data - skipping Spotify play history filtering")
         unplayed = candidates
     
     if not unplayed:
         logger.error("No unplayed tracks remaining after filtering!")
         return [], stats
     
-    # Score tracks
+    # Step 2: Score all tracks
     logger.info("Scoring candidates...")
     for candidate in unplayed:
         score = score_track(candidate, export_loader)
@@ -387,16 +398,63 @@ def filter_and_score_candidates(
     
     stats['scored_tracks'] = len(unplayed)
     
-    # Sort by score and take top N
+    # Step 3: Sort by score (highest first)
     sorted_tracks = sorted(unplayed, key=lambda x: x.get('score', 0), reverse=True)
-    final_tracks = sorted_tracks[:target_count]
+    
+    logger.info(f"✓ Scored {len(unplayed)} tracks")
+    logger.info(f"  Top score: {sorted_tracks[0]['score']:.3f}")
+    logger.info(f"  Median score: {sorted_tracks[len(sorted_tracks)//2]['score']:.3f}")
+    
+    # Step 4: Check Last.fm playcount for top candidates (optimization)
+    if check_lastfm_playcount and lastfm_client and lastfm_client.username:
+        logger.info("Checking Last.fm playcount for top candidates...")
+        logger.info("  (This ensures tracks are truly unplayed)")
+        
+        final_tracks = []
+        checked_count = 0
+        
+        # Only check up to 2x target to avoid excessive API calls
+        max_checks = min(len(sorted_tracks), target_count * 2)
+        
+        for candidate in sorted_tracks[:max_checks]:
+            checked_count += 1
+            
+            artist = candidate.get('artist_display', candidate.get('artist', ''))
+            track = candidate.get('track_display', candidate.get('track', ''))
+            
+            # Check if user has played this on Last.fm
+            playcount = lastfm_client.get_user_track_playcount(artist, track)
+            
+            if playcount > 0:
+                logger.debug(f"  ❌ Skipping (Last.fm playcount: {playcount}): {artist} - {track}")
+                stats['filtered_lastfm_played'] += 1
+                continue
+            
+            # Track is unplayed - add to final list
+            final_tracks.append(candidate)
+            
+            # Stop once we have enough
+            if len(final_tracks) >= target_count:
+                break
+        
+        logger.info(f"✓ Checked {checked_count} tracks on Last.fm")
+        logger.info(f"  Filtered {stats['filtered_lastfm_played']} already-played tracks")
+        logger.info(f"  Found {len(final_tracks)} truly unplayed tracks")
+        
+    else:
+        # No Last.fm checking - just take top N
+        if not check_lastfm_playcount:
+            logger.info("Last.fm playcount check disabled - using top scored tracks")
+        elif not lastfm_client:
+            logger.warning("No Last.fm client - cannot check playcount")
+        elif not lastfm_client.username:
+            logger.warning("No Last.fm username - cannot check playcount")
+        
+        final_tracks = sorted_tracks[:target_count]
     
     stats['final_count'] = len(final_tracks)
     
-    logger.info(f"✓ Scored {len(unplayed)} tracks")
-    logger.info(f"  Top score: {final_tracks[0]['score']:.3f}")
-    logger.info(f"  Median score: {sorted_tracks[len(sorted_tracks)//2]['score']:.3f}")
-    logger.info(f"  Selected top {len(final_tracks)} tracks")
+    logger.info(f"  Selected top {len(final_tracks)} tracks for output")
     
     return final_tracks, stats
 
@@ -516,6 +574,145 @@ def update_playlist(sp, playlist_id: str, track_uris: List[str]) -> int:
         return 0
 
 
+def send_to_ifttt_webhook(
+    recommendations: List[Dict],
+    webhook_key: str,
+    event_name: str = "add_unplayed_track",
+    batch_delay: float = 1.0
+) -> int:
+    """
+    Send recommendations to IFTTT webhook for Spotify playlist management.
+    
+    IFTTT Setup:
+    1. Create applet at ifttt.com/create
+    2. IF: Webhooks - Receive a web request
+       - Event Name: add_unplayed_track
+    3. THEN: Spotify - Add track to playlist
+       - Search Query: {{Value1}} {{Value2}}
+       - Playlist: Unplayed Discoveries
+    4. Get your webhook key from: ifttt.com/maker_webhooks/settings
+    
+    Args:
+        recommendations: List of track dicts with artist/track keys
+        webhook_key: Your IFTTT webhook key
+        event_name: IFTTT event name (default: add_unplayed_track)
+        batch_delay: Delay between requests in seconds (default: 1.0)
+    
+    Returns:
+        Number of tracks successfully sent to IFTTT
+    """
+    if not webhook_key or webhook_key == "your_ifttt_webhook_key":
+        logger.warning("IFTTT webhook key not configured - skipping IFTTT integration")
+        return 0
+    
+    webhook_url = f"https://maker.ifttt.com/trigger/{event_name}/with/key/{webhook_key}"
+    success_count = 0
+    
+    logger.info(f"Sending {len(recommendations)} tracks to IFTTT webhook...")
+    
+    for i, track in enumerate(recommendations, 1):
+        try:
+            artist = track.get('artist_display', track.get('artist', 'Unknown'))
+            track_name = track.get('track_display', track.get('track', 'Unknown'))
+            score = track.get('score', 0.0)
+            
+            payload = {
+                "value1": artist,
+                "value2": track_name,
+                "value3": f"{score:.3f}"
+            }
+            
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                success_count += 1
+                if i % 10 == 0:  # Log progress every 10 tracks
+                    logger.info(f"  Sent {i}/{len(recommendations)} tracks to IFTTT")
+            else:
+                logger.warning(f"IFTTT webhook returned {response.status_code} for: {artist} - {track_name}")
+            
+            # Rate limiting - be nice to IFTTT
+            if i < len(recommendations):
+                time.sleep(batch_delay)
+        
+        except Exception as e:
+            logger.warning(f"Failed to send track {i} to IFTTT: {e}")
+            continue
+    
+    logger.info(f"✓ Sent {success_count}/{len(recommendations)} tracks to IFTTT webhook")
+    return success_count
+
+
+def export_to_make_webhook(
+    recommendations: List[Dict],
+    webhook_url: str = "https://hook.eu1.make.com/oew1k7uglnazdaiawavugih45kuov4d8",
+    playlist_name: str = "Unplayed Discoveries"
+) -> int:
+    """
+    Phase 4: Output Layer (Make.com Webhook)
+    
+    Bypasses the Spotify Developer 403 Premium restriction by handing 
+    the tracks off to a free Make.com enterprise automation.
+    
+    Make.com Setup:
+    1. Create a webhook scenario at make.com
+    2. Add webhook trigger module to receive JSON: {track: string, artist: string}
+    3. Add Spotify "Add Track to Playlist" module
+    4. Connect them and activate the scenario
+    5. Use the webhook URL provided by Make.com
+    
+    Args:
+        recommendations: List of track dicts with artist/track keys
+        webhook_url: Your Make.com webhook URL
+        playlist_name: Name of the playlist (for logging only)
+    
+    Returns:
+        Number of tracks successfully sent to Make.com
+    """
+    logger.info("=" * 60)
+    logger.info("PHASE 4: WEBHOOK EXPORT & PLAYLIST GENERATION")
+    logger.info("=" * 60)
+    
+    if not webhook_url or "YOUR_WEBHOOK_URL" in webhook_url:
+        logger.error("Make.com webhook URL not configured!")
+        return 0
+    
+    logger.info(f"Sending {len(recommendations)} tracks to automation pipeline...")
+    logger.info(f"Target playlist: {playlist_name}")
+    logger.info(f"Webhook: {webhook_url[:50]}...")
+    
+    success_count = 0
+    
+    # Use enumerate to keep track of the index (0, 1, 2, 3...)
+    for index, track in enumerate(recommendations):
+        track_name = track.get("track_display", track.get("track", "Unknown Track"))
+        artist_name = track.get("artist_display", track.get("artist", "Unknown Artist"))
+        
+        payload = {
+            "track": track_name,
+            "artist": artist_name,
+            "is_first": index == 0  # True for the 1st track, False for the rest
+        }
+        
+        try:
+            # Send the data to Make.com
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            success_count += 1
+            logger.info(f"  → Success: {artist_name} - {track_name}")
+            
+        except Exception as e:
+            logger.warning(f"  → Failed to send '{artist_name} - {track_name}': {e}")
+            
+        time.sleep(3)
+    
+    logger.info("=" * 60)
+    logger.info(f"✓ Pipeline Complete! Successfully routed {success_count}/{len(recommendations)} tracks to Spotify.")
+    logger.info("=" * 60)
+    
+    return success_count
+
+
 def export_to_local_file(
     recommendations: List[Dict],
     output_dir: str = "output",
@@ -633,22 +830,31 @@ def display_recommendations_terminal(recommendations: List[Dict], exported_file:
 def resolve_and_output(
     sp,
     recommendations: List[Dict],
-    playlist_name: str = "Unplayed Discoveries"
+    playlist_name: str = "Unplayed Discoveries",
+    ifttt_webhook_key: Optional[str] = None,
+    make_webhook_url: Optional[str] = None
 ) -> Tuple[str, int, Dict]:
     """
-    Resolve tracks to Spotify URIs and update playlist.
-    Falls back to local file export if Spotify API fails (403 or other errors).
+    Resolve tracks and output via multiple methods with graceful fallback.
+    
+    Output Priority:
+    1. Try Make.com webhook (bypasses Premium & Developer restrictions)
+    2. Try Spotify API (playlist update) - if Make.com not configured
+    3. If configured, try IFTTT webhook (legacy alternative)
+    4. Fall back to local file export (always works)
     
     Args:
-        sp: Spotipy client instance
+        sp: Spotipy client instance (can be None if using webhook-only mode)
         recommendations: List of track dicts with artist/track keys
         playlist_name: Name for the output playlist
+        ifttt_webhook_key: Optional IFTTT webhook key for alternative output
+        make_webhook_url: Optional Make.com webhook URL (primary method)
     
     Returns:
         Tuple of (playlist_id, tracks_added, stats dict)
     """
     logger.info("=" * 60)
-    logger.info("PHASE 4: SPOTIFY URI RESOLUTION & OUTPUT")
+    logger.info("PHASE 4: OUTPUT & DELIVERY")
     logger.info("=" * 60)
     
     stats = {
@@ -656,10 +862,53 @@ def resolve_and_output(
         'uris_resolved': 0,
         'resolution_failures': 0,
         'tracks_added': 0,
+        'output_method': 'none',
+        'make_webhook_used': False,
+        'make_success': 0,
+        'ifttt_used': False,
+        'ifttt_success': 0,
         'fallback_used': False,
         'fallback_file': None
     }
     
+    # PRIORITY 1: Try Make.com webhook first (if configured)
+    # This is the preferred method as it bypasses ALL Spotify API restrictions
+    if make_webhook_url and make_webhook_url != "YOUR_WEBHOOK_URL":
+        try:
+            logger.info("=" * 60)
+            logger.info("OUTPUT METHOD: MAKE.COM WEBHOOK")
+            logger.info("=" * 60)
+            
+            make_success = export_to_make_webhook(
+                recommendations,
+                webhook_url=make_webhook_url,
+                playlist_name=playlist_name
+            )
+            
+            stats['make_webhook_used'] = True
+            stats['make_success'] = make_success
+            stats['tracks_added'] = make_success
+            stats['output_method'] = 'make_webhook'
+            
+            if make_success > 0:
+                # Also export for reference
+                md_file = export_to_local_file(recommendations, format="markdown")
+                stats['fallback_file'] = md_file
+                
+                logger.info(f"✓ Reference file created: {md_file}")
+                
+                # Display terminal summary
+                display_recommendations_terminal(recommendations, md_file)
+                
+                return "MAKE_WEBHOOK", make_success, stats
+            else:
+                logger.warning("Make.com webhook returned 0 successes - trying next method...")
+                
+        except Exception as make_error:
+            logger.warning(f"Make.com webhook failed: {make_error}")
+            logger.info("Falling back to Spotify API...")
+    
+    # PRIORITY 2: Try Spotify API (if Make.com not configured or failed)
     try:
         # Create resolver
         resolver = create_resolver(sp)
@@ -709,27 +958,69 @@ def resolve_and_output(
             logger.info("✓ PHASE 4 COMPLETE - SPOTIFY PLAYLIST UPDATED")
             logger.info("=" * 60)
             
+            stats['output_method'] = 'spotify_api'
             return playlist_id, tracks_added, stats
             
         except Exception as e:
             logger.warning(f"Failed to update playlist: {e}")
-            logger.warning("Falling back to local export.")
             raise  # Trigger outer exception handler
     
-    except Exception as e:
-        # Fallback to local export
+    except Exception as spotify_error:
+        # Spotify API failed - try alternative output methods
         logger.warning("=" * 60)
-        logger.warning("SPOTIFY API RESTRICTED - USING LOCAL EXPORT FALLBACK")
+        logger.warning("SPOTIFY API UNAVAILABLE - TRYING ALTERNATIVE OUTPUTS")
         logger.warning("=" * 60)
-        logger.info("This is normal for Spotify Free accounts with restricted API access.")
-        logger.info("Your recommendations will be exported to a local file instead.")
         
-        # Check if it's specifically a 403 error
-        error_str = str(e)
+        error_str = str(spotify_error)
         if '403' in error_str or 'Forbidden' in error_str:
             logger.info("Detected 403 Forbidden - Spotify Premium/Developer restrictions apply.")
         
-        # Export to both markdown and CSV
+        # Try IFTTT webhook first (if configured)
+        if ifttt_webhook_key:
+            try:
+                logger.info("\n" + "─" * 60)
+                logger.info("OUTPUT OPTION A: IFTTT WEBHOOK")
+                logger.info("─" * 60)
+                
+                ifttt_success = send_to_ifttt_webhook(
+                    recommendations,
+                    ifttt_webhook_key,
+                    event_name="add_unplayed_track",
+                    batch_delay=1.0
+                )
+                
+                stats['ifttt_used'] = True
+                stats['ifttt_success'] = ifttt_success
+                stats['tracks_added'] = ifttt_success
+                stats['output_method'] = 'ifttt_webhook'
+                
+                if ifttt_success > 0:
+                    # Also export for reference
+                    md_file = export_to_local_file(recommendations, format="markdown")
+                    stats['fallback_file'] = md_file
+                    
+                    logger.info("\n" + "=" * 60)
+                    logger.info("✓ PHASE 4 COMPLETE - IFTTT WEBHOOK")
+                    logger.info("=" * 60)
+                    logger.info(f"Tracks sent to IFTTT: {ifttt_success}/{len(recommendations)}")
+                    logger.info(f"Reference file: {md_file}")
+                    logger.info("=" * 60)
+                    
+                    # Display terminal summary
+                    display_recommendations_terminal(recommendations, md_file)
+                    
+                    return "IFTTT_WEBHOOK", ifttt_success, stats
+                
+            except Exception as ifttt_error:
+                logger.warning(f"IFTTT webhook also failed: {ifttt_error}")
+        
+        # Fall back to local file export
+        logger.info("\n" + "─" * 60)
+        logger.info("OUTPUT OPTION B: LOCAL FILE EXPORT")
+        logger.info("─" * 60)
+        logger.info("This is normal for Spotify Free accounts with restricted API access.")
+        logger.info("Your recommendations will be exported to local files.")
+        
         try:
             md_file = export_to_local_file(recommendations, format="markdown")
             csv_file = export_to_local_file(recommendations, format="csv")
@@ -737,6 +1028,7 @@ def resolve_and_output(
             stats['fallback_used'] = True
             stats['fallback_file'] = md_file
             stats['fallback_csv'] = csv_file
+            stats['output_method'] = 'local_export'
             
             # Display rich terminal summary
             display_recommendations_terminal(recommendations, md_file)
@@ -820,6 +1112,7 @@ def generate_discovery_tracks(
     recommendations, filter_stats = filter_and_score_candidates(
         candidates,
         export_loader,
+        lastfm_client=lastfm_client,
         target_count=target
     )
     pipeline_stats['filtering_scoring'] = filter_stats
@@ -844,16 +1137,30 @@ def generate_discovery_tracks(
     return track_ids, filtered_count, pipeline_stats
 
 
-def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: int = 40):
+def run_full_pipeline(
+    sp,
+    playlist_name: str = "Unplayed Discoveries",
+    target: int = 40,
+    ifttt_webhook_key: Optional[str] = None,
+    make_webhook_url: Optional[str] = None
+):
     """
-    Run the complete discovery pipeline with output to Spotify playlist.
+    Run the complete discovery pipeline with multiple output options.
     
-    This is the new main entry point that replaces the old Spotify-centric approach.
+    This is the main entry point that replaces the old Spotify-centric approach.
+    
+    Output methods (in priority order):
+    1. Make.com Webhook (if configured) - RECOMMENDED, bypasses all API restrictions
+    2. Spotify API (if available and Make.com not configured)
+    3. IFTTT Webhook (if configured, legacy alternative)
+    4. Local file export (always works)
     
     Args:
-        sp: Authenticated Spotipy client
+        sp: Authenticated Spotipy client (can be None if using webhook-only mode)
         playlist_name: Name for output playlist
         target: Target number of recommendations
+        ifttt_webhook_key: Optional IFTTT webhook key for alternative output
+        make_webhook_url: Optional Make.com webhook URL (recommended method)
     
     Returns:
         Dict with pipeline results
@@ -869,6 +1176,10 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         lastfm_client = get_lastfm_client()
         export_loader = load_spotify_export()
         
+        # Get IFTTT key from environment if not provided
+        if ifttt_webhook_key is None:
+            ifttt_webhook_key = os.environ.get('IFTTT_WEBHOOK_KEY', '')
+        
         # Phase 1: Build taste profile
         artist_pool, taste_stats = build_taste_profile(lastfm_client)
         all_stats['taste_profile'] = taste_stats
@@ -881,6 +1192,7 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         recommendations, filter_stats = filter_and_score_candidates(
             candidates,
             export_loader,
+            lastfm_client=lastfm_client,
             target_count=target
         )
         all_stats['filtering_scoring'] = filter_stats
@@ -889,7 +1201,9 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         playlist_id, tracks_added, output_stats = resolve_and_output(
             sp,
             recommendations,
-            playlist_name
+            playlist_name,
+            ifttt_webhook_key,
+            make_webhook_url
         )
         all_stats['resolution_output'] = output_stats
         
@@ -898,17 +1212,33 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
         logger.info("PIPELINE COMPLETE!")
         logger.info("=" * 60)
         
-        if output_stats.get('fallback_used', False):
+        output_method = output_stats.get('output_method', 'unknown')
+        
+        if output_method == 'make_webhook':
+            # Make.com webhook used
+            logger.info(f"Output: Make.com Webhook")
+            logger.info(f"Tracks sent to Make.com: {output_stats.get('make_success', 0)}/{output_stats['recommendations_input']}")
+            logger.info(f"Reference file: {output_stats.get('fallback_file', 'N/A')}")
+        
+        elif output_method == 'spotify_api':
+            # Spotify playlist updated successfully
+            logger.info(f"Output: Spotify playlist")
+            logger.info(f"Playlist: {playlist_id}")
+            logger.info(f"Tracks added: {tracks_added}")
+            logger.info(f"Resolution rate: {output_stats.get('uris_resolved', 0)}/{output_stats['recommendations_input']}")
+        
+        elif output_method == 'ifttt_webhook':
+            # IFTTT webhook used
+            logger.info(f"Output: IFTTT Webhook")
+            logger.info(f"Tracks sent to IFTTT: {output_stats.get('ifttt_success', 0)}/{output_stats['recommendations_input']}")
+            logger.info(f"Reference file: {output_stats.get('fallback_file', 'N/A')}")
+        
+        elif output_method == 'local_export':
             # Local export fallback was used
-            logger.info(f"Output: Local file export (Spotify API restricted)")
+            logger.info(f"Output: Local file export")
             logger.info(f"Tracks exported: {tracks_added}")
             logger.info(f"Markdown file: {output_stats.get('fallback_file', 'N/A')}")
             logger.info(f"CSV file: {output_stats.get('fallback_csv', 'N/A')}")
-        else:
-            # Spotify playlist was updated successfully
-            logger.info(f"Playlist: {playlist_id}")
-            logger.info(f"Tracks added: {tracks_added}")
-            logger.info(f"Resolution rate: {output_stats['uris_resolved']}/{output_stats['recommendations_input']}")
         
         logger.info(f"Total candidates: {gen_stats['total_candidates']}")
         logger.info(f"Filtered (played): {filter_stats['filtered_played']}")
@@ -918,12 +1248,15 @@ def run_full_pipeline(sp, playlist_name: str = "Unplayed Discoveries", target: i
             'success': True,
             'playlist_id': playlist_id,
             'tracks_added': tracks_added,
+            'output_method': output_method,
             'stats': all_stats,
+            'make_webhook_used': output_stats.get('make_webhook_used', False),
+            'ifttt_used': output_stats.get('ifttt_used', False),
             'fallback_used': output_stats.get('fallback_used', False),
             'export_files': {
                 'markdown': output_stats.get('fallback_file'),
                 'csv': output_stats.get('fallback_csv')
-            } if output_stats.get('fallback_used', False) else None
+            } if output_stats.get('fallback_file') else None
         }
     
     except Exception as e:

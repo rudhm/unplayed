@@ -3,7 +3,6 @@ import uuid
 import os
 from datetime import datetime
 
-from spotify_client import get_spotify
 from database import init_db, log_run_stats, get_stats
 from discovery import run_full_pipeline
 
@@ -21,49 +20,42 @@ def main():
     Architecture:
     1. INTELLIGENCE (Brain): Last.fm API for taste profiles and recommendations
     2. MEMORY (History): Local Spotify GDPR exports for filtering played tracks
-    3. OUTPUT (Resolution): Multiple output methods with graceful fallback
-       - Priority 1: Make.com Webhook (bypasses all restrictions)
-       - Priority 2: Spotify API for URI resolution and playlist management
-       - Priority 3: IFTTT Webhook (legacy alternative)
-       - Priority 4: Local file export (always works)
+    3. OUTPUT (Delivery): Make.com Webhook for playlist management
     
     Pipeline:
-    1. Authenticate with Spotify (output layer only)
-    2. Initialize database
-    3. Run hybrid discovery pipeline (Last.fm + local exports)
-    4. Output via Make.com webhook or fallback methods
-    5. Log statistics
+    1. Initialize database
+    2. Run hybrid discovery pipeline (Last.fm + local exports)
+    3. Output via Make.com webhook
+    4. Log statistics
     """
     
     run_id = str(uuid.uuid4())[:8]
     logger.info(f"Starting Hybrid Discovery Engine (run_id: {run_id})")
     
     try:
-        # Get Make.com webhook URL from environment (if configured)
+        # Get Make.com webhook URL from environment (required)
         make_webhook_url = os.getenv('MAKE_WEBHOOK_URL', '')
-        if make_webhook_url:
-            logger.info("✓ Make.com webhook configured (primary output method)")
+        if not make_webhook_url:
+            raise RuntimeError(
+                "MAKE_WEBHOOK_URL environment variable is required. "
+                "Please set it to your Make.com webhook endpoint."
+            )
+        logger.info("✓ Make.com webhook configured")
         
-        # Phase 1: Authenticate with Spotify (OUTPUT LAYER ONLY)
-        logger.info("Step 1: Authenticating with Spotify (output layer)...")
-        sp = get_spotify()
-        logger.info("✓ Spotify authentication successful")
-        
-        # Phase 2: Initialize database
-        logger.info("Step 2: Initializing database...")
+        # Phase 1: Initialize database
+        logger.info("Step 1: Initializing database...")
         init_db()
         logger.info("✓ Database initialized")
         
-        # Phase 3: Run the complete hybrid pipeline
+        # Phase 2: Run the complete hybrid pipeline
         # This uses Last.fm for intelligence, local exports for filtering,
-        # and multiple output methods with graceful fallback
-        logger.info("Step 3: Running hybrid discovery pipeline...")
+        # and Make.com webhook for output
+        logger.info("Step 2: Running hybrid discovery pipeline...")
         logger.info("  → Intelligence layer: Last.fm API")
         logger.info("  → Memory layer: Local Spotify GDPR exports (optional)")
-        logger.info("  → Output layer: Make.com webhook (if configured) or Spotify API")
+        logger.info("  → Output layer: Make.com webhook")
         
         pipeline_result = run_full_pipeline(
-            sp=sp,
             playlist_name="Unplayed Discoveries",
             target=40,
             make_webhook_url=make_webhook_url
@@ -79,8 +71,8 @@ def main():
         tracks_added = pipeline_result.get('tracks_added', 0)
         stats = pipeline_result.get('stats', {})
         
-        # Phase 4: Log run statistics
-        logger.info("Step 4: Logging run statistics...")
+        # Phase 3: Log run statistics
+        logger.info("Step 3: Logging run statistics...")
         
         # Create API stats dict from pipeline results
         api_stats = {
@@ -98,14 +90,6 @@ def main():
         logger.info("✓ Statistics logged")
         
         # Final summary
-        output_method = pipeline_result.get('output_method', 'unknown')
-        output_display = {
-            'make_webhook': 'Make.com webhook (✓)',
-            'spotify_api': 'Spotify API (✓)',
-            'ifttt_webhook': 'IFTTT webhook (✓)',
-            'local_export': 'Local file export (✓)'
-        }.get(output_method, f'{output_method} (✓)')
-        
         logger.info("=" * 60)
         logger.info("HYBRID DISCOVERY ENGINE COMPLETE")
         logger.info(f"Playlist ID: {playlist_id}")
@@ -113,7 +97,7 @@ def main():
         logger.info(f"Tracks filtered: {filtered_count}")
         logger.info(f"Intelligence: Last.fm (✓)")
         logger.info(f"Memory: {'GDPR exports (✓)' if stats.get('export_tracks_loaded', 0) > 0 else 'None (skipped)'}")
-        logger.info(f"Output: {output_display}")
+        logger.info(f"Output: Make.com webhook (✓)")
         logger.info("=" * 60)
         
         return {

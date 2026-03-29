@@ -648,13 +648,8 @@ def export_to_make_webhook(
     """
     Phase 4: Output Layer (Make.com Webhook)
     
-    Sends all tracks in a single BATCH request to bypass Make.com rate limits
-    and reduce operation consumption.
-    
-    Make.com Setup:
-    1. Webhook trigger receives a JSON array of objects: [{track, artist}, ...]
-    2. (Optional) Use an "Iterator" module in Make to process individually,
-       OR use Spotify "Add Multiple Items to Playlist" module.
+    Sends tracks one-by-one with a rate-limiting delay to avoid 
+    'Queue is full' errors on Make.com free tier.
     
     Args:
         recommendations: List of track dicts
@@ -662,43 +657,51 @@ def export_to_make_webhook(
         playlist_name: Name of the playlist
     """
     logger.info("=" * 60)
-    logger.info("PHASE 4: BATCH WEBHOOK EXPORT")
+    logger.info("PHASE 4: RATE-LIMITED WEBHOOK EXPORT")
     logger.info("=" * 60)
     
     if not webhook_url or "YOUR_WEBHOOK_URL" in webhook_url:
         logger.error("Make.com webhook URL not configured!")
         return 0
     
-    # Prepare the batch payload
-    batch_data = []
+    success_count = 0
+    total = len(recommendations)
+    
+    logger.info(f"Sending {total} tracks to automation pipeline (1 track every 3s)...")
+    
     for index, track in enumerate(recommendations):
-        batch_data.append({
-            "track": track.get("track_display", track.get("track", "Unknown Track")),
-            "artist": track.get("artist_display", track.get("artist", "Unknown Artist")),
+        track_name = track.get("track_display", track.get("track", "Unknown Track"))
+        artist_name = track.get("artist_display", track.get("artist", "Unknown Artist"))
+        
+        payload = {
+            "track": track_name,
+            "artist": artist_name,
             "rank": index + 1,
-            "playlist_name": playlist_name
-        })
-    
-    logger.info(f"Sending {len(batch_data)} tracks to automation pipeline in a single batch...")
-    
-    try:
-        # Send the entire list at once
-        response = requests.post(
-            webhook_url, 
-            json={"tracks": batch_data, "total": len(batch_data)}, 
-            timeout=30
-        )
+            "playlist_name": playlist_name,
+            "is_last": index == total - 1
+        }
         
-        if response.status_code >= 400:
-            logger.error(f"Webhook Error ({response.status_code}): {response.text}")
-            response.raise_for_status()
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
             
-        logger.info(f"✓ Successfully sent batch to Make.com")
-        return len(batch_data)
-        
-    except Exception as e:
-        logger.error(f"Batch export failed: {e}")
-        return 0
+            if response.status_code >= 400:
+                logger.warning(f"  [!] Failed {index+1}/{total}: {artist_name} - {track_name} (Error {response.status_code}: {response.text})")
+            else:
+                success_count += 1
+                logger.info(f"  [✓] Sent {index+1}/{total}: {artist_name} - {track_name}")
+                
+        except Exception as e:
+            logger.warning(f"  [!] Error sending {artist_name} - {track_name}: {e}")
+            
+        # Rate limiting: Sleep for 3 seconds between requests
+        if index < total - 1:
+            time.sleep(3)
+    
+    logger.info("=" * 60)
+    logger.info(f"✓ Pipeline Complete! Successfully routed {success_count}/{total} tracks to Spotify.")
+    logger.info("=" * 60)
+    
+    return success_count
 
 
 def export_to_local_file(
@@ -895,21 +898,7 @@ def generate_discovery_tracks(
     exclude_played: Set[str] = None
 ) -> Tuple[List[str], int, Dict]:
     """
-    Main hybrid discovery pipeline.
-    
-    Pipeline:
-    1. Build taste profile from Last.fm
-    2. Generate candidates from Last.fm
-    3. Filter & score candidates
-    4. Resolve to Spotify URIs
-    
-    Args:
-        sp: Spotipy client instance
-        target: Target number of recommendations
-        exclude_played: Legacy parameter (now handled by export loader)
-    
-    Returns:
-        Tuple of (track_uris list, filtered_count, stats dict)
+    Main hybrid discovery pipeline using Top Artists + Similar Artists.
     """
     logger.info("\n" + "=" * 60)
     logger.info("HYBRID DISCOVERY ENGINE - STARTING PIPELINE")
@@ -927,7 +916,6 @@ def generate_discovery_tracks(
         lastfm_client = get_lastfm_client()
     except Exception as e:
         logger.error(f"Failed to initialize Last.fm client: {e}")
-        logger.error("Ensure LASTFM_API_KEY and LASTFM_USERNAME are set in environment")
         raise
     
     # Fetch full scrobble history once at startup
@@ -960,7 +948,7 @@ def generate_discovery_tracks(
     if not recommendations:
         raise Exception("No recommendations after filtering")
     
-    # Return track data for external playlist management
+    # Return track data
     track_ids = [rec.get('track_id', '') for rec in recommendations]
     filtered_count = filter_stats.get('filtered_played_spotify', 0) + filter_stats.get('filtered_played_lastfm', 0)
     
@@ -983,20 +971,6 @@ def run_full_pipeline(
 ):
     """
     Run the complete discovery pipeline with Make.com webhook output.
-    
-    This is the main entry point that uses Last.fm for intelligence
-    and Make.com webhook for output.
-    
-    Output method:
-    - Make.com Webhook (required) - bypasses all API restrictions
-    
-    Args:
-        playlist_name: Name for output playlist
-        target: Target number of recommendations
-        make_webhook_url: Make.com webhook URL (required)
-    
-    Returns:
-        Dict with pipeline results
     """
     logger.info("\n" + "=" * 60)
     logger.info("HYBRID DISCOVERY ENGINE - FULL PIPELINE")
@@ -1042,10 +1016,8 @@ def run_full_pipeline(
         logger.info("PIPELINE COMPLETE!")
         logger.info("=" * 60)
         
-        # Make.com webhook used
         logger.info(f"Output: Make.com Webhook")
         logger.info(f"Tracks sent to Make.com: {output_stats.get('make_success', 0)}/{output_stats['recommendations_input']}")
-        logger.info(f"Reference file: {output_stats.get('fallback_file', 'N/A')}")
         
         logger.info(f"Total candidates: {gen_stats['total_candidates']}")
         filtered_count = filter_stats.get('filtered_played_spotify', 0) + filter_stats.get('filtered_played_lastfm', 0)
@@ -1058,11 +1030,7 @@ def run_full_pipeline(
             'tracks_added': tracks_added,
             'output_method': 'make_webhook',
             'stats': all_stats,
-            'make_webhook_used': output_stats.get('make_webhook_used', False),
-            'export_files': {
-                'markdown': output_stats.get('fallback_file'),
-                'csv': output_stats.get('fallback_csv')
-            } if output_stats.get('fallback_file') else None
+            'make_webhook_used': output_stats.get('make_webhook_used', False)
         }
     
     except Exception as e:

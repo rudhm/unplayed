@@ -121,7 +121,7 @@ def build_taste_profile(
     
     if not top_artists:
         logger.error("No top artists found! Cannot build taste profile.")
-        return [], stats
+        return {}, stats
     
     stats['top_artists_fetched'] = len(top_artists)
     logger.info(f"✓ Fetched {len(top_artists)} top artists from Last.fm")

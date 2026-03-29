@@ -648,66 +648,57 @@ def export_to_make_webhook(
     """
     Phase 4: Output Layer (Make.com Webhook)
     
-    Bypasses the Spotify Developer 403 Premium restriction by handing 
-    the tracks off to a free Make.com enterprise automation.
+    Sends all tracks in a single BATCH request to bypass Make.com rate limits
+    and reduce operation consumption.
     
     Make.com Setup:
-    1. Create a webhook scenario at make.com
-    2. Add webhook trigger module to receive JSON: {track: string, artist: string}
-    3. Add Spotify "Add Track to Playlist" module
-    4. Connect them and activate the scenario
-    5. Use the webhook URL provided by Make.com
+    1. Webhook trigger receives a JSON array of objects: [{track, artist}, ...]
+    2. (Optional) Use an "Iterator" module in Make to process individually,
+       OR use Spotify "Add Multiple Items to Playlist" module.
     
     Args:
-        recommendations: List of track dicts with artist/track keys
+        recommendations: List of track dicts
         webhook_url: Your Make.com webhook URL
-        playlist_name: Name of the playlist (for logging only)
-    
-    Returns:
-        Number of tracks successfully sent to Make.com
+        playlist_name: Name of the playlist
     """
     logger.info("=" * 60)
-    logger.info("PHASE 4: WEBHOOK EXPORT & PLAYLIST GENERATION")
+    logger.info("PHASE 4: BATCH WEBHOOK EXPORT")
     logger.info("=" * 60)
     
     if not webhook_url or "YOUR_WEBHOOK_URL" in webhook_url:
         logger.error("Make.com webhook URL not configured!")
         return 0
     
-    logger.info(f"Sending {len(recommendations)} tracks to automation pipeline...")
-    logger.info(f"Target playlist: {playlist_name}")
-    logger.info(f"Webhook: {webhook_url[:50]}...")
-    
-    success_count = 0
-    
-    # Use enumerate to keep track of the index (0, 1, 2, 3...)
+    # Prepare the batch payload
+    batch_data = []
     for index, track in enumerate(recommendations):
-        track_name = track.get("track_display", track.get("track", "Unknown Track"))
-        artist_name = track.get("artist_display", track.get("artist", "Unknown Artist"))
+        batch_data.append({
+            "track": track.get("track_display", track.get("track", "Unknown Track")),
+            "artist": track.get("artist_display", track.get("artist", "Unknown Artist")),
+            "rank": index + 1,
+            "playlist_name": playlist_name
+        })
+    
+    logger.info(f"Sending {len(batch_data)} tracks to automation pipeline in a single batch...")
+    
+    try:
+        # Send the entire list at once
+        response = requests.post(
+            webhook_url, 
+            json={"tracks": batch_data, "total": len(batch_data)}, 
+            timeout=30
+        )
         
-        payload = {
-            "track": track_name,
-            "artist": artist_name,
-            "is_first": index == 0  # True for the 1st track, False for the rest
-        }
-        
-        try:
-            # Send the data to Make.com
-            response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code >= 400:
+            logger.error(f"Webhook Error ({response.status_code}): {response.text}")
             response.raise_for_status()
-            success_count += 1
-            logger.info(f"  → Success: {artist_name} - {track_name}")
             
-        except Exception as e:
-            logger.warning(f"  → Failed to send '{artist_name} - {track_name}': {e}")
-            
-        time.sleep(3)
-    
-    logger.info("=" * 60)
-    logger.info(f"✓ Pipeline Complete! Successfully routed {success_count}/{len(recommendations)} tracks to Spotify.")
-    logger.info("=" * 60)
-    
-    return success_count
+        logger.info(f"✓ Successfully sent batch to Make.com")
+        return len(batch_data)
+        
+    except Exception as e:
+        logger.error(f"Batch export failed: {e}")
+        return 0
 
 
 def export_to_local_file(

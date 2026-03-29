@@ -185,28 +185,25 @@ def build_taste_profile(
 def generate_candidates(
     lastfm_client,
     artist_pool: Dict,
-    tracks_per_artist: int = 5,
-    max_candidates: int = 300
+    tracks_per_artist: int = 20,
+    max_candidates: int = 600
 ) -> Tuple[List[Dict], Dict]:
     """
     Generate candidate tracks from artist pool using Last.fm.
     
     Strategy:
-    1. For each artist in pool, fetch top tracks
+    1. For each artist in pool, fetch top tracks (deeper limit for discovery)
     2. Collect metadata: playcount, listeners, artist weight
-    3. Return candidate list (200-300 tracks)
+    3. Return candidate list (500-600 tracks)
     
     Args:
         lastfm_client: Configured LastFmClient instance
         artist_pool: Dict of artist_name -> metadata from build_taste_profile
-        tracks_per_artist: Number of tracks to fetch per artist
+        tracks_per_artist: Number of tracks to fetch per artist (default 20 for deep cuts)
         max_candidates: Maximum total candidates to generate
-    
-    Returns:
-        Tuple of (candidate_tracks list, stats dict)
     """
     logger.info("=" * 60)
-    logger.info("PHASE 2: GENERATING CANDIDATES (LAST.FM)")
+    logger.info("PHASE 2: GENERATING CANDIDATES (DEEP CUTS)")
     logger.info("=" * 60)
     
     stats = {
@@ -224,7 +221,7 @@ def generate_candidates(
         reverse=True
     )
     
-    logger.info(f"Fetching top tracks for {len(sorted_artists)} artists...")
+    logger.info(f"Fetching top {tracks_per_artist} tracks for {len(sorted_artists)} artists...")
     
     for artist_name, artist_meta in sorted_artists:
         if len(candidates) >= max_candidates:
@@ -238,7 +235,17 @@ def generate_candidates(
                 limit=tracks_per_artist
             )
             
-            for track_data in tracks:
+            # Identify "Deep Cuts": Skip the top 2 global hits if the artist is popular
+            # This ensures we don't just get the most obvious radio hits
+            start_idx = 0
+            if len(tracks) > 5:
+                # If artist is very popular, skip the biggest hits
+                first_track_listeners = tracks[0].get('listeners', 0)
+                if first_track_listeners > 1000000:
+                    start_idx = 3
+                    logger.debug(f"  Skipping top hits for popular artist: {display_name}")
+            
+            for track_data in tracks[start_idx:]:
                 track_id = get_track_id(
                     track_data.get('artist', ''),
                     track_data.get('track', '')
@@ -256,7 +263,8 @@ def generate_candidates(
                     'playcount': track_data.get('playcount', 0),
                     'listeners': track_data.get('listeners', 0),
                     'artist_weight': artist_meta.get('weight', 0.5),
-                    'source': artist_meta.get('source', 'unknown')
+                    'source': artist_meta.get('source', 'unknown'),
+                    'rank': tracks.index(track_data) + 1
                 })
             
             stats['artists_processed'] += 1
@@ -290,7 +298,7 @@ def score_track(
     Score a candidate track for ranking.
     
     Formula: base_score + history_boost
-    - base_score: (0.6 * popularity) + (0.4 * artist_weight)
+    - base_score: (0.2 * popularity) + (0.8 * artist_weight)
     - history_boost: +0.2 if artist is in user's play history
     
     Args:
@@ -306,12 +314,13 @@ def score_track(
     listeners = track_data.get('listeners', 0)
     artist_weight = track_data.get('artist_weight', 0.5)
     
-    # Popularity score (normalized from playcount/listeners)
-    # Use listeners as proxy for popularity (more stable than playcount)
-    popularity_score = min(1.0, listeners / 100000.0) if listeners > 0 else 0.0
+    # Popularity score (normalized from listeners)
+    # Reduced weight for popularity to favor personal taste
+    popularity_score = min(1.0, listeners / 200000.0) if listeners > 0 else 0.0
     
-    # Base score: 60% popularity, 40% artist weight
-    base_score = (0.6 * popularity_score) + (0.4 * artist_weight)
+    # Base score: 20% popularity (global), 80% artist weight (personal)
+    # This shifts the focus from "Global Hits" to "Your Artists"
+    base_score = (0.2 * popularity_score) + (0.8 * artist_weight)
     
     # History boost: If this artist is in user's Spotify history, boost score
     history_boost = 0.0
@@ -320,8 +329,8 @@ def score_track(
         artist_freq = export_loader.get_artist_frequency(artist)
         if artist_freq > 0:
             # Boost by up to 0.2 based on how often artist is played
-            artist_weight = export_loader.get_artist_weight(artist)
-            history_boost = 0.2 * artist_weight
+            history_artist_weight = export_loader.get_artist_weight(artist)
+            history_boost = 0.2 * history_artist_weight
     
     return base_score + history_boost
 
